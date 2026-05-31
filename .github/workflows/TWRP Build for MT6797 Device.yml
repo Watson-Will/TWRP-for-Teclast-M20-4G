@@ -21,11 +21,18 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 使用正确的 AIK-Linux 分支
-          git clone --depth=1 -b AIK-Linux https://github.com/osm0sis/Android-Image-Kitchen.git AIK
+          # 1. 克隆 AIK 主分支 (更稳定，包含所有架构二进制文件)
+          git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git AIK
+          
+          # 2. 进入目录并赋予所有脚本和二进制文件执行权限
           cd AIK
-          chmod +x *.sh
-          ls -la
+          chmod +x *.sh bin/* bin/avb/* bin/chromeos/* 2>/dev/null || true
+          
+          # 3. 检查关键文件是否存在，防止静默失败
+          if [ ! -f "bin/linux/x86_64/unpackbootimg" ]; then
+            echo "❌ 错误：unpackbootimg 工具未找到！克隆可能失败。"
+            exit 1
+          fi
           cd ..
 
       - name: Prepare & Fix Stock Image (Android 8.0)
