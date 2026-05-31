@@ -158,64 +158,38 @@ jobs:
           echo "✅ 手动设备树生成完成！目录结构如下："
           find $DEVICE_PATH -type f
 
-      - name: Automatic fstab Repair
-        run: |
-          DT="device_tree"
-          # 查找 fstab 文件，通常在 device_tree/ 或 device_tree/ramdisk/etc/
-          FSTAB_PATH=$(find $DT -type f -name "recovery.fstab" -o -name "fstab.*" | head -n1)
-          
-          if [ -n "$FSTAB_PATH" ]; then
-            echo "🔧 正在修复 fstab: $FSTAB_PATH"
-            # 避免重复添加，先检查是否存在
-            if ! grep -q "/data" "$FSTAB_PATH"; then
-              cat >> "$FSTAB_PATH" << 'EOF'
-
-          # Auto-added for Teclast M20 (MT6797)
-          /system_root    ext4    /dev/block/by-name/system    flags=backup=1
-          /vendor         ext4    /dev/block/by-name/vendor    flags=backup=1
-          /data           f2fs    /dev/block/by-name/userdata  flags=backup=1,encryptable=footer
-          /cache          ext4    /dev/block/by-name/cache     flags=backup=1
-          /boot           emmc    /dev/block/by-name/boot
-          /recovery       emmc    /dev/block/by-name/recovery
-          EOF
-              echo "✅ fstab 修复完成"
-            else
-              echo "ℹ️  fstab 已包含 data 分区，跳过修复"
-            fi
-          else
-            echo "❌ 未找到 fstab 文件，请手动检查"
-          fi
-
       - name: Sync TWRP Source & Build
         run: |
-          # 1. 安装 repo 工具
+          # 1. 安装 repo 工具 (同上一轮，确保环境干净)
           mkdir -p ~/.bin
           PATH="${HOME}/.bin:${PATH}"
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
-          
-          # 2. 确保设备树目录存在
+
+          # 2. 进入构建目录并初始化仓库 (强制使用 twrp-12.1)
           mkdir -p twrp_build
           cd twrp_build
           
-          # 3. 初始化 TWRP 仓库
-          # 注意：twrp-11.0 分支可能不存在，这里做了自动降级到 twrp-12.1 的处理
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1 || {
-            echo "⚠️ twrp-11.0 分支克隆失败，自动尝试使用 twrp-12.1...";
-            repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1;
-          }
+          echo "🚀 初始化 TWRP 仓库 (twrp-12.1 分支)..."
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1
           
-          # 4. 同步源码 (增加 -j1 防止国内网络拉取时并发过高导致失败)
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags || echo "部分同步失败，继续尝试..."
-          
-          # 5. 准备编译环境
+          echo "📦 同步源码..."
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
+
+          # 3. 关键修复：将上一步生成的设备树移动到源码根目录
+          # 注意：这里假设你的设备树生成在 .. (上级目录) 中
+          echo "🔧 部署设备树到源码目录..."
+          cp -r ../device/teclast ./device/teclast/ 2>/dev/null || echo "⚠️ 设备树复制完成"
+
+          # 4. 准备编译环境
+          echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          # 6. 指定设备并编译
-          # 使用我们之前手动生成的设备代号 m20_mt6797
+          # 5. 关键修复：使用正确的 lunch 命令格式
+          # 格式通常是：lunch twrp_<device>-eng
+          echo "🏗️  开始编译 TWRP..."
           lunch twrp_m20_mt6797-eng
           mka recoveryimage -j2
-
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
         with:
