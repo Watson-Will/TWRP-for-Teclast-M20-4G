@@ -21,38 +21,47 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
 
-      - name: Prepare Stock Images
+      - name: Prepare Stock Images + Debug
         run: |
+          echo "当前目录：$(pwd)"
           ls -la
+          
           if [ -f recovery.img ]; then
             cp recovery.img stock.img
-            echo "✅ 使用 recovery.img 作为源"
+            echo "✅ 已复制 recovery.img → stock.img"
           elif [ -f boot.img ]; then
             cp boot.img stock.img
-            echo "✅ 使用 boot.img 作为源"
+            echo "✅ 已复制 boot.img → stock.img"
           else
-            echo "❌ 缺少 recovery.img 或 boot.img"
+            echo "❌ 错误：仓库根目录中没有找到 recovery.img 或 boot.img"
+            echo "请确保你已上传其中一个文件到仓库根目录"
             exit 1
           fi
+          
+          ls -la stock.img
 
       - name: Generate Device Tree using twrpdtgen
         run: |
+          echo "当前目录：$(pwd)"
+          ls -la
+          
           mkdir -p device_tree
-          # 修正：移除不支持的参数 --force --twrp
-          python3 -m twrpdtgen ../stock.img -o ../device_tree
+          
+          # 使用绝对路径确保找到 stock.img
+          python3 -m twrpdtgen "$(pwd)/stock.img" -o "$(pwd)/device_tree"
+          
           echo "✅ 设备树生成完成"
-          ls -la ../device_tree
+          ls -la device_tree
 
       - name: Customize Device Tree (MT6797 + 2560x1600)
         run: |
-          DT="../device_tree"
-          # 尝试自动获取 codename
-          CODENAME=$(grep "ro.product.device" $DT/*/recovery/root/default.prop 2>/dev/null | cut -d= -f2 | head -n1 || echo "mt6797")
-          
-          # 如果输出结构是 output/manufacturer/codename，则调整
+          DT="device_tree"
+          # 兼容 twrpdtgen 输出结构
           if [ -d "$DT/output" ]; then
-            cp -r $DT/output/*/* $DT/ 2>/dev/null || true
+            mv $DT/output/*/* $DT/ 2>/dev/null || true
           fi
+          
+          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 || echo "mt6797")
           
           cat > $DT/BoardConfig.mk << EOF
           DEVICE_PATH := \$(LOCAL_PATH)
@@ -97,15 +106,17 @@ jobs:
 
       - name: Automatic fstab Repair
         run: |
-          DT="../device_tree"
+          DT="device_tree"
           FSTAB=$(find $DT -name "recovery.fstab" | head -n1)
-          TWRP_FSTAB=$(dirname "$FSTAB")/twrp.fstab
           
-          echo "🔧 开始自动修复 fstab..."
-          cp "$FSTAB" "${FSTAB}.bak" 2>/dev/null || true
-          
-          cat >> "$FSTAB" << EOF
-          
+          if [ -z "$FSTAB" ]; then
+            echo "⚠️ 未找到 recovery.fstab，跳过部分修复"
+          else
+            echo "🔧 修复 fstab: $FSTAB"
+            cp "$FSTAB" "${FSTAB}.bak" 2>/dev/null || true
+            
+            cat >> "$FSTAB" << EOF
+            
           # Auto-added for MT6797
           /system_root    ext4    /dev/block/by-name/system    flags=backup=1
           /vendor         ext4    /dev/block/by-name/vendor    flags=backup=1
@@ -115,9 +126,8 @@ jobs:
           /recovery       emmc    /dev/block/by-name/recovery
           /misc           emmc    /dev/block/by-name/misc
           EOF
-          
-          cp "$FSTAB" "$TWRP_FSTAB" 2>/dev/null || true
-          echo "✅ fstab 修复完成"
+            echo "✅ fstab 修复完成"
+          fi
 
       - name: Sync TWRP 11.0 & Build
         run: |
@@ -125,7 +135,7 @@ jobs:
           cd twrp_build
           
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1
-          repo sync -c --force-sync -j3 --no-clone-bundle --no-tags || echo "部分同步失败，继续尝试"
+          repo sync -c --force-sync -j3 --no-clone-bundle --no-tags || echo "部分同步失败"
           
           mkdir -p device/$CODENAME
           cp -r ../device_tree/* device/$CODENAME/ 2>/dev/null || true
@@ -133,12 +143,12 @@ jobs:
           . build/envsetup.sh
           lunch twrp_$CODENAME-eng || lunch twrp_generic-eng
           
-          mka recoveryimage -j$(nproc --all) || echo "⚠️ 编译结束（请检查日志）"
+          mka recoveryimage -j2 || echo "⚠️ 编译结束，请查看日志"
 
       - name: Find and Rename TWRP Image
         run: |
-          find twrp_build -name "*recovery.img" -o -name "twrp*.img" | head -n1 | xargs -I {} cp {} ./twrp-MT6797-2560x1600-11.0.img || echo "未找到镜像文件"
-          ls -lh twrp-MT6797-2560x1600-11.0.img 2>/dev/null || echo "⚠️ 请检查上一阶段编译日志"
+          find twrp_build -name "*recovery.img" -o -name "twrp*.img" | head -n1 | xargs -I {} cp {} ./twrp-MT6797-2560x1600-11.0.img || echo "未找到镜像"
+          ls -lh twrp-MT6797-2560x1600-11.0.img 2>/dev/null || echo "⚠️ 编译未生成镜像"
 
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
