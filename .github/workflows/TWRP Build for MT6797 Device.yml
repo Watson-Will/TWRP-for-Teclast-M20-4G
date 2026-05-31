@@ -16,23 +16,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils
 
-      - name: Setup Java and unpack boot.img
+      - name: Setup Java 17 and unpack boot.img
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 安装 Java 运行环境 (该工具需要 Java) 和基础解压工具
+          # 1. 安装 JDK 17 (解决 Gradle 版本不兼容问题)
           sudo apt-get update
-          sudo apt-get install -y default-jre cpio gzip
+          sudo apt-get install -y openjdk-17-jdk cpio gzip
           
-          # 2. 下载强大的第三方解包/打包工具 Android_boot_image_editor
+          # 2. 将系统的默认 Java 环境切换为 JDK 17
+          sudo update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+          sudo update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac
+          
+          # 验证 Java 版本，确保输出为 17.x.x
+          java -version
+          
+          # 3. 下载 Android_boot_image_editor 工具
           git clone --depth=1 https://github.com/cfig/Android_boot_image_editor.git boot_editor
           cd boot_editor
           
-          # 3. 将原厂 boot.img 拷贝进来并改名为 stock.img (该工具的默认输入文件名)
+          # 4. 将原厂 boot.img 拷贝进来并改名为 stock.img
           cp ../boot.img stock.img
           
-          # 4. 执行解包命令
+          # 5. 执行解包命令
           ./gradlew unpack
           
           echo "✅ 原厂 boot.img 解包完成，解包后的文件在 build/unzip_boot 目录下："
