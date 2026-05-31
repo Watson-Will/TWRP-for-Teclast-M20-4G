@@ -16,49 +16,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils
 
-      - name: Setup twrpdtgen + AIK-Linux
+      - name: Setup build environment and unpack boot.img
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 克隆 AIK 仓库 (使用主分支，更稳定)
-          git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git AIK
-          cd AIK
+          # 1. 安装 AOSP 官方工具链的编译依赖
+          sudo apt-get update
+          sudo apt-get install -y build-essential liblz4-tool cpio zlib1g-dev
           
-          # 2. 查找 unpackbootimg 工具的实际位置
-          echo "🔍 正在搜索 unpackbootimg 工具..."
-          find . -name "unpackbootimg*" -type f -executable 2>/dev/null
+          # 2. 下载并编译 AOSP 原生的 unpackbootimg 和 mkbootimg 工具
+          # 使用官方 platform_system_core 仓库
+          git clone --depth=1 https://android.googlesource.com/platform/system/core core_src
+          cd core_src/libsparse
+          make -j4
+          cd ../mkbootimg
+          make -j4
+          cd ../../..
           
-          # 3. 根据常见结构创建必要的目录软链接或移动文件
-          # 情况 A: 如果工具在 bin/ 目录下 (扁平结构)
-          if [ -f "bin/unpackbootimg" ]; then
-            echo "🛠️ 检测到扁平结构，正在修复路径..."
-            mkdir -p bin/linux/x86_64
-            cp bin/unpackbootimg bin/linux/x86_64/
-            cp bin/repackbootimg bin/linux/x86_64/ 2>/dev/null || true
-          fi
+          # 3. 将编译好的工具添加到环境变量
+          echo "$(pwd)/core_src/mkbootimg" >> $GITHUB_PATH
           
-          # 情况 B: 如果工具缺失，尝试使用 Python 版本 (如果存在)
-          if [ ! -f "bin/linux/x86_64/unpackbootimg" ] && [ -f "unpackbootimg.py" ]; then
-            echo "📦 使用 Python 版本作为替代..."
-            mkdir -p bin/linux/x86_64
-            cp unpackbootimg.py bin/linux/x86_64/unpackbootimg
-            chmod +x bin/linux/x86_64/unpackbootimg
-          fi
+          # 4. 手动解包 boot.img (替代 AIK 的 unpackimg.sh)
+          mkdir -p boot_out
+          # 使用编译好的 unpackbootimg 解包原厂 boot.img
+          ./core_src/mkbootimg/unpackbootimg -i boot.img -o boot_out
           
-          # 4. 确保所有脚本可执行
-          chmod +x *.sh bin/* 2>/dev/null || true
-          
-          # 5. 最终检查
-          if [ ! -f "bin/linux/x86_64/unpackbootimg" ]; then
-            echo "❌ 致命错误：无法定位或恢复 unpackbootimg 工具。"
-            echo "当前 AIK/bin 目录结构："
-            find . -path "*/bin/*" -type f
-            exit 1
-          fi
-          
-          echo "✅ AIK 环境准备就绪"
-          cd ..
+          echo "✅ 原厂 boot.img 解包完成，文件列表如下："
+          ls -la boot_out
 
       - name: Prepare & Fix Stock Image (Android 8.0)
         run: |
