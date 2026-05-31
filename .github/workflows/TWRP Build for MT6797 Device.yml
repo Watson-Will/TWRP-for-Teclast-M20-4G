@@ -186,32 +186,35 @@ jobs:
             echo "❌ 未找到 fstab 文件，请手动检查"
           fi
 
-      - name: Sync TWRP 11.0 & Build
+      - name: Sync TWRP Source & Build
         run: |
-          # 确保目录存在
+          # 1. 安装 repo 工具
+          mkdir -p ~/.bin
+          PATH="${HOME}/.bin:${PATH}"
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
+          chmod a+rx ~/.bin/repo
+          
+          # 2. 确保设备树目录存在
           mkdir -p twrp_build
           cd twrp_build
           
-          # 初始化仓库
-          # 注意：twrp-11.0 分支可能不存在，TWRP 11.0 通常对应 android-11.0 标签或分支
-          # 如果失败，可以尝试 twrp-12.1 或其他相近版本
+          # 3. 初始化 TWRP 仓库
+          # 注意：twrp-11.0 分支可能不存在，这里做了自动降级到 twrp-12.1 的处理
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1 || {
-            echo "⚠️  twrp-11.0 分支克隆失败，尝试使用 twrp-12.1...";
+            echo "⚠️ twrp-11.0 分支克隆失败，自动尝试使用 twrp-12.1...";
             repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1;
           }
           
-          # 同步代码
-          repo sync -c --force-sync -j3 --no-clone-bundle --no-tags || echo "部分同步失败，继续..."
+          # 4. 同步源码 (增加 -j1 防止国内网络拉取时并发过高导致失败)
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags || echo "部分同步失败，继续尝试..."
           
-          # 创建设备树目录并复制
-          CODENAME=$(grep "PRODUCT_DEVICE" ../device_tree/BoardConfig.mk | cut -d= -f2)
-          mkdir -p device/teclast/$CODENAME
-          cp -r ../device_tree/* device/teclast/$CODENAME/ 2>/dev/null || true
-          
-          # 准备编译环境
+          # 5. 准备编译环境
           . build/envsetup.sh
-          lunch twrp_$CODENAME-eng || lunch twrp_generic-eng
-          mka recoveryimage -j2 || echo "⚠️ 编译结束，请查看日志"
+          
+          # 6. 指定设备并编译
+          # 使用我们之前手动生成的设备代号 m20_mt6797
+          lunch twrp_m20_mt6797-eng
+          mka recoveryimage -j2
 
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
