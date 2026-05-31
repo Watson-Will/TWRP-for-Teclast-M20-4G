@@ -1,0 +1,309 @@
+name: TWRP Build for MT6797 Device
+
+on:
+  push:
+    paths:
+      - 'recovery.img'
+      - 'boot.img'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-twrp:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180  # 编译TWRP通常需要1-2小时
+
+    env:
+      DEVICE_CODENAME: "mt6797_custom"  # 自定义设备代号
+      TWRP_VERSION: "3.7.0_12"           # 选择支持Android 8.0的TWRP版本
+      SCREEN_RESOLUTION: "2560x1600"     # 设备屏幕分辨率
+      ANDROID_VERSION: "8.0"             # 原厂Android版本
+
+    steps:
+    - name: 检出仓库代码
+      uses: actions/checkout@v4
+
+    - name: 验证必要文件存在
+      run: |
+        if [ ! -f recovery.img ] || [ ! -f boot.img ]; then
+          echo "错误：recovery.img或boot.img文件缺失！"
+          exit 1
+        fi
+        echo "✅ 找到recovery.img和boot.img文件"
+
+    - name: 安装编译依赖
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison build-essential curl flex \
+          g++-multilib gcc-multilib git gnupg \
+          lib32bz2-1.0 lib32ncurses5 lib32readline8 \
+          lib32z1 liblz4-tool libncurses5 libssl-dev \
+          libxml2 libxml2-utils lzop pngcrush \
+          schedtool squashfs-tools xsltproc \
+          zip zlib1g-dev imagemagick libwxgtk3.0-gtk3-dev \
+          openjdk-8-jdk unrar python-is-python3 libtinfo5
+
+    - name: 设置Android编译环境
+      run: |
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        echo 'export PATH=~/bin:$PATH' >> ~/.bashrc
+        
+        # 配置git
+        git config --global user.name "TWRP Builder"
+        git config --global user.email "builder@actions.github.com"
+
+    - name: 分析原厂boot.img
+      id: analyze_boot
+      run: |
+        # 安装img工具
+        git clone https://github.com/anestisb/android-simg2img.git
+        cd android-simg2img
+        make
+        sudo cp simg2img imgextractor unpackbootimg mkbootimg ./mkbootimg/mkbootimg /usr/local/bin/
+        cd ..
+        
+        # 提取boot.img信息
+        mkdir -p boot_analysis
+        unpackbootimg -i boot.img -o boot_analysis
+        
+        # 获取关键参数
+        BASE_ADDR=$(grep "Android bootimg base" boot_analysis/boot.img-out.txt | awk '{print $5}')
+        PAGESIZE=$(grep "Page size" boot_analysis/boot.img-out.txt | awk '{print $3}')
+        CMDLINE=$(grep "Command line" boot_analysis/boot.img-out.txt | sed 's/Command line: //')
+        
+        # 输出结果供后续步骤使用
+        echo "base_addr=$BASE_ADDR" >> $GITHUB_OUTPUT
+        echo "pagesize=$PAGESIZE" >> $GITHUB_OUTPUT
+        echo "cmdline=$CMDLINE" >> $GITHUB_OUTPUT
+        echo "✅ boot.img分析完成"
+
+    - name: 分析原厂recovery.img
+      run: |
+        mkdir -p recovery_analysis
+        unpackbootimg -i recovery.img -o recovery_analysis
+        
+        # 检查是否为MTK设备特有格式
+        if file recovery.img | grep -q "MTK"; then
+          echo "⚠️ 检测到MTK特有格式recovery.img，需要特殊处理"
+          # 提取MTK头信息
+          echo "MTK_HEADER=$(head -c 512 recovery.img | xxd -p -c 512)" > recovery_analysis/mtk_info.txt
+        fi
+        
+        # 提取recovery ramdisk
+        mkdir -p recovery_ramdisk
+        cd recovery_ramdisk
+        zcat ../recovery_analysis/recovery.img-ramdisk.cpio.gz | cpio -i
+        cd ..
+        
+        # 检查关键分区
+        if [ -f recovery_ramdisk/sbin/ramdisk.rc ]; then
+          echo "✅ 找到ramdisk.rc，提取分区信息"
+          grep "/dev/block/platform" recovery_ramdisk/sbin/ramdisk.rc > recovery_analysis/partitions.txt
+        fi
+
+    - name: 准备TWRP源码
+      run: |
+        # 创建TWRP工作目录
+        mkdir -p twrp && cd twrp
+        
+        # 初始化TWRP仓库
+        repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b ${TWRP_VERSION}
+        repo sync -c --no-clone-bundle --no-tags --optimized-fetch --prune --force-sync -j$(nproc)
+        
+        # 创建设备目录结构
+        mkdir -p device/mediatek/${DEVICE_CODENAME}
+        mkdir -p vendor/mediatek/${DEVICE_CODENAME}
+
+    - name: 生成设备树配置
+      run: |
+        cd twrp
+        
+        # 创建BoardConfig.mk
+        cat > device/mediatek/${DEVICE_CODENAME}/BoardConfig.mk << EOF
+# 继承MTK基础配置
+include device/mediatek/mt6797/BoardConfig.mk
+
+# 设备特定配置
+TARGET_ARCH := arm64
+TARGET_ARCH_VARIANT := armv8-a
+TARGET_CPU_ABI := arm64-v8a
+TARGET_CPU_ABI2 :=
+TARGET_CPU_VARIANT := cortex-a53
+
+TARGET_2ND_ARCH := arm
+TARGET_2ND_ARCH_VARIANT := armv8-a
+TARGET_2ND_CPU_ABI := armeabi-v7a
+TARGET_2ND_CPU_ABI2 := armeabi
+TARGET_2ND_CPU_VARIANT := cortex-a53
+
+# 分辨率配置 (2560x1600)
+RECOVERY_SDCARD_ON_DATA := true
+TW_THEME := portrait_hdpi
+RECOVERY_GRAPHICS_USE_LINELENGTH := true
+TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
+TW_MAX_BRIGHTNESS := 255
+TW_DEFAULT_BRIGHTNESS := 162
+TW_Y_OFFSET := 70
+TW_H_OFFSET := 0
+TW_SCREEN_BLANK_ON_BOOT := true
+TW_NO_REBOOT_BOOTLOADER := true
+TW_HAS_DOWNLOAD_MODE := true
+TW_INCLUDE_CRYPTO := true
+TW_CRYPTO_USE_SYSTEM_VOLD := qseecomd
+TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
+TW_MAX_BRIGHTNESS := 255
+TW_DEFAULT_BRIGHTNESS := 162
+TW_NO_USB_STORAGE := false
+TW_EXTERNAL_STORAGE_PATH := "/external_sd"
+TW_EXTERNAL_STORAGE_MOUNT_POINT := "external_sd"
+TW_DEFAULT_EXTERNAL_STORAGE := true
+
+# MTK特定配置
+BOARD_USES_MTK_HARDWARE := true
+MTK_HARDWARE := true
+BOARD_HAS_MTK_HARDWARE := true
+RECOVERY_USE_MTK_HEADERS := true
+
+# boot.img参数 (从原厂提取)
+BOARD_KERNEL_BASE := ${{ steps.analyze_boot.outputs.base_addr }}
+BOARD_KERNEL_PAGESIZE := ${{ steps.analyze_boot.outputs.pagesize }}
+BOARD_KERNEL_CMDLINE := ${{ steps.analyze_boot.outputs.cmdline }}
+
+# 分区配置
+BOARD_HAS_NO_REAL_SDCARD := true
+RECOVERY_SDCARD_ON_DATA := true
+TW_USE_TOOLBOX := true
+TW_NO_EXFAT_FUSE := true
+TW_INCLUDE_NTFS_3G := true
+TW_EXCLUDE_DEFAULT_USB_INIT := true
+TARGET_USERIMAGES_USE_EXT4 := true
+BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
+BOARD_FLASH_BLOCK_SIZE := 131072
+
+# Android 8.0支持
+PLATFORM_VERSION := 8.0.0
+EOF
+
+        # 创建device.mk
+        cat > device/mediatek/${DEVICE_CODENAME}/device.mk << EOF
+# 设备名称
+PRODUCT_DEVICE := ${DEVICE_CODENAME}
+PRODUCT_NAME := omni_${DEVICE_CODENAME}
+PRODUCT_BRAND := MediaTek
+PRODUCT_MODEL := MT6797 Custom Device
+PRODUCT_MANUFACTURER := MediaTek
+
+# TWRP包配置
+PRODUCT_COPY_FILES += \\
+    device/mediatek/${DEVICE_CODENAME}/twrp.png:recovery/root/res/images/omni_logo.png
+
+# 必需组件
+\$(call inherit-product, \\
+    vendor/omni/config/common.mk)
+EOF
+
+        # 创建AndroidProducts.mk
+        cat > device/mediatek/${DEVICE_CODENAME}/AndroidProducts.mk << EOF
+PRODUCT_MAKEFILES := \\
+    \$(LOCAL_DIR)/omni_${DEVICE_CODENAME}.mk
+EOF
+
+        # 创建omni_<device>.mk
+        cat > device/mediatek/${DEVICE_CODENAME}/omni_${DEVICE_CODENAME}.mk << EOF
+\$(call inherit-product, device/mediatek/${DEVICE_CODENAME}/device.mk)
+\$(call inherit-product, vendor/omni/config/common.mk)
+
+PRODUCT_NAME := omni_${DEVICE_CODENAME}
+EOF
+
+        # 添加设备图标 (使用标准TWRP图标)
+        wget -O device/mediatek/${DEVICE_CODENAME}/twrp.png https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_omni/twrp-3.7.0/default_recovery_logo.png
+
+    - name: 编译TWRP
+      run: |
+        cd twrp
+        
+        # 设置编译环境
+        . build/envsetup.sh
+        export LC_ALL=C
+        export ALLOW_MISSING_DEPENDENCIES=true
+        
+        # 选择设备
+        lunch omni_${DEVICE_CODENAME}-eng
+        
+        # 开始编译 (使用所有可用核心)
+        mka recoveryimage -j$(nproc)
+
+    - name: 验证生成的recovery.img
+      run: |
+        cd twrp
+        if [ -f out/target/product/${DEVICE_CODENAME}/recovery.img ]; then
+          echo "✅ TWRP编译成功！生成recovery.img"
+          ls -lh out/target/product/${DEVICE_CODENAME}/recovery.img
+          
+          # 检查是否符合TWRP官方APP要求
+          FILE_SIZE=\$(stat -c%s "out/target/product/${DEVICE_CODENAME}/recovery.img")
+          if [ \$FILE_SIZE -gt 16777216 ]; then
+            echo "⚠️ 警告：recovery.img大小(\$FILE_SIZE字节)可能超过标准分区大小(16MB)"
+          else
+            echo "✅ recovery.img大小符合标准分区要求"
+          fi
+          
+          # 检查是否包含必要TWRP标识
+          if strings out/target/product/${DEVICE_CODENAME}/recovery.img | grep -q "TWRP"; then
+            echo "✅ recovery.img包含TWRP标识"
+          else
+            echo "❌ 错误：生成的recovery.img可能不是有效的TWRP镜像"
+            exit 1
+          fi
+        else
+          echo "❌ 错误：未生成recovery.img文件"
+          exit 1
+        fi
+
+    - name: 准备发布文件
+      run: |
+        cd twrp
+        mkdir -p release
+        cp out/target/product/${DEVICE_CODENAME}/recovery.img release/twrp-${TWRP_VERSION}-${DEVICE_CODENAME}-$(date +%Y%m%d).img
+        
+        # 创建TWRP官方APP兼容的ZIP包
+        cd release
+        zip -r twrp-${TWRP_VERSION}-${DEVICE_CODENAME}-$(date +%Y%m%d).zip recovery.img
+        
+        # 创建设备信息JSON (供TWRP官方APP识别)
+        cat > device_info.json << EOF
+{
+  "codename": "${DEVICE_CODENAME}",
+  "name": "MT6797 Custom Device",
+  "manufacturer": "MediaTek",
+  "version": "${TWRP_VERSION}",
+  "recovery_size": $(stat -c%s recovery.img),
+  "date": "$(date +%s)",
+  "md5": "$(md5sum recovery.img | awk '{print $1}')",
+  "sha256": "$(sha256sum recovery.img | awk '{print $1}')",
+  "download_size": $(stat -c%s recovery.img),
+  "filename": "twrp-${TWRP_VERSION}-${DEVICE_CODENAME}-$(date +%Y%m%d).img",
+  "method": "recovery",
+  "notes": "For MT6797 (Helio X20/X27) devices with 2560x1600 display running Android 8.0",
+  "version_detail": "${TWRP_VERSION} for Android 8.0"
+}
+EOF
+
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v3
+      with:
+        name: twrp-release
+        path: twrp/release/
+        retention-days: 30
+
+    - name: 创建GitHub Release
+      if: github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: twrp/release/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
