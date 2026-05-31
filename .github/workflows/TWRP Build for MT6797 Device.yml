@@ -21,18 +21,36 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 克隆 AIK 主分支 (更稳定，包含所有架构二进制文件)
-          git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git AIK
+          # 1. 克隆 AIK 仓库 (去掉 --depth=1 以确保完整性)
+          git clone https://github.com/osm0sis/Android-Image-Kitchen.git AIK
           
-          # 2. 进入目录并赋予所有脚本和二进制文件执行权限
+          # 2. 进入目录
           cd AIK
-          chmod +x *.sh bin/* bin/avb/* bin/chromeos/* 2>/dev/null || true
           
-          # 3. 检查关键文件是否存在，防止静默失败
+          # 3. 强制修复所有脚本和二进制文件的权限 (关键步骤)
+          # 包括隐藏文件和多层目录
+          find . -type f -exec chmod 755 {} \;
+          
+          # 4. 检查关键工具是否存在
           if [ ! -f "bin/linux/x86_64/unpackbootimg" ]; then
-            echo "❌ 错误：unpackbootimg 工具未找到！克隆可能失败。"
-            exit 1
+            echo "⚠️ 警告：标准工具未找到。尝试查找替代文件名..."
+            
+            # 有些版本可能文件名不同，尝试软链接或重命名
+            if [ -f "bin/linux/x86_64/unpackbootimg.py" ]; then
+              echo "找到 Python 版本，创建可执行链接..."
+              ln -s unpackbootimg.py unpackbootimg
+            elif [ -f "unpackbootimg" ]; then
+              mv unpackbootimg bin/linux/x86_64/
+            else
+              echo "❌ 致命错误：无法在 $(pwd)/bin/linux/x86_64/ 中找到 unpackbootimg。"
+              echo "列出 bin 目录内容以供调试："
+              ls -la bin/linux/x86_64/
+              exit 1
+            fi
           fi
+          
+          # 5. 确保顶层脚本可执行
+          chmod +x unpackimg.sh repackimg.sh
           cd ..
 
       - name: Prepare & Fix Stock Image (Android 8.0)
