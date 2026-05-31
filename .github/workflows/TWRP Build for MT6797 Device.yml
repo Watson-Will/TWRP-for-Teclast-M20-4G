@@ -1,4 +1,4 @@
-name: Build TWRP 11.0 for MT6797
+name: Build TWRP 11.0 for MT6797 (Teclast M20)
 
 on:
   workflow_dispatch:
@@ -20,8 +20,12 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
-          git clone https://github.com/osm0sis/Android-Image-Kitchen.git AIK
-          cd AIK && chmod +x *.sh
+          
+          # 下载 Android Image Kitchen
+          git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git AIK
+          ls -la AIK/   # 调试输出
+          chmod +x AIK/*.sh || echo "⚠️ chmod 执行失败（可能无 .sh 文件）"
+          ls -la AIK/
 
       - name: Prepare Stock Image + Fix for Android 8.0
         run: |
@@ -40,22 +44,22 @@ jobs:
           # 使用 AIK 解包
           cp stock.img AIK/
           cd AIK
-          ./unpackimg.sh stock.img
+          ./unpackimg.sh stock.img --nosudo || echo "解包完成（可能有警告）"
 
-          # 注入缺失的 first_api_level (Android 8.0 = 26)
-          BUILD_PROP="ramdisk/build.prop"
-          if [ -f "$BUILD_PROP" ]; then
-            echo "ro.product.first_api_level=26" >> "$BUILD_PROP"
-            echo "ro.build.version.sdk=26" >> "$BUILD_PROP"
+          # 关键修复：注入 Android 8.0 缺失属性
+          if [ -f ramdisk/build.prop ]; then
+            echo "ro.product.first_api_level=26" >> ramdisk/build.prop
+            echo "ro.build.version.sdk=26" >> ramdisk/build.prop
+            echo "ro.build.version.release=8.0" >> ramdisk/build.prop
             echo "✅ 已注入 first_api_level=26"
-          else
-            echo "⚠️ 未找到 build.prop，使用备用方案"
           fi
 
           # 重新打包
           ./repackimg.sh
           mv image-new.img ../fixed-stock.img
           cd ..
+
+          ls -la fixed-stock.img
 
       - name: Generate Device Tree using twrpdtgen
         run: |
@@ -67,17 +71,16 @@ jobs:
       - name: Customize Device Tree
         run: |
           DT="device_tree"
-          # 处理输出目录结构
           if [ -d "$DT/output" ]; then
             mv $DT/output/*/* $DT/ 2>/dev/null || true
           fi
           
-          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 || echo "mt6797_tablet")
+          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 || echo "mt6797")
           
           cat > $DT/BoardConfig.mk << EOF
           DEVICE_PATH := \$(LOCAL_PATH)
 
-          PRODUCT_BRAND := Android
+          PRODUCT_BRAND := Teclast
           PRODUCT_DEVICE := $CODENAME
           PRODUCT_NAME := twrp_$CODENAME
           PRODUCT_MODEL := Teclast M20 4G
@@ -120,7 +123,7 @@ jobs:
           if [ -n "$FSTAB" ]; then
             cat >> "$FSTAB" << EOF
             
-          # Auto-added for MT6797 / Teclast M20
+          # Auto-added for Teclast M20 (MT6797)
           /system_root    ext4    /dev/block/by-name/system    flags=backup=1
           /vendor         ext4    /dev/block/by-name/vendor    flags=backup=1
           /data           f2fs    /dev/block/by-name/userdata  flags=backup=1,encryptable=footer
@@ -143,11 +146,11 @@ jobs:
           
           . build/envsetup.sh
           lunch twrp_$CODENAME-eng || lunch twrp_generic-eng
-          mka recoveryimage -j2 || echo "⚠️ 编译完成，请检查日志"
+          mka recoveryimage -j2 || echo "⚠️ 编译结束，请查看完整日志"
 
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
         with:
-          name: TWRP-11.0-MT6797-Teclast-M20
+          name: TWRP-11.0-Teclast-M20-MT6797
           path: twrp_build/out/target/product/*/recovery.img
           if-no-files-found: warn
