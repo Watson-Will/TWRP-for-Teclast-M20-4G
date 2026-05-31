@@ -21,12 +21,12 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 下载可靠的 AIK-Linux
-          wget https://github.com/osm0sis/Android-Image-Kitchen/releases/download/v3.8/AIK-Linux-v3.8-ALL.tar.gz -O aik.tar.gz
-          tar -xzf aik.tar.gz
-          mv AIK-Linux* AIK
-          chmod +x AIK/*.sh
-          ls -la AIK/
+          # 使用正确的 AIK-Linux 分支
+          git clone --depth=1 -b AIK-Linux https://github.com/osm0sis/Android-Image-Kitchen.git AIK
+          cd AIK
+          chmod +x *.sh
+          ls -la
+          cd ..
 
       - name: Prepare & Fix Stock Image (Android 8.0)
         run: |
@@ -44,20 +44,22 @@ jobs:
 
           cp stock.img AIK/
           cd AIK
-          echo "正在解包..."
+          echo "正在解包 stock.img ..."
           ./unpackimg.sh stock.img --nosudo
 
-          # 修复 twrpdtgen 需要的属性
+          # 修复 twrpdtgen 报错
           if [ -f ramdisk/build.prop ]; then
             echo "ro.product.first_api_level=26" >> ramdisk/build.prop
             echo "ro.build.version.sdk=26" >> ramdisk/build.prop
             echo "ro.build.version.release=8.0" >> ramdisk/build.prop
-            echo "✅ 已注入 Android 8.0 属性"
+            echo "✅ 已成功注入 Android 8.0 属性"
           fi
 
           ./repackimg.sh
           mv image-new.img ../fixed-stock.img
           cd ..
+
+          ls -la fixed-stock.img
 
       - name: Generate Device Tree
         run: |
@@ -121,7 +123,7 @@ jobs:
           if [ -n "$FSTAB" ]; then
             cat >> "$FSTAB" << EOF
             
-          # Auto-added for Teclast M20 MT6797
+          # Auto-added for Teclast M20 (MT6797)
           /system_root    ext4    /dev/block/by-name/system    flags=backup=1
           /vendor         ext4    /dev/block/by-name/vendor    flags=backup=1
           /data           f2fs    /dev/block/by-name/userdata  flags=backup=1,encryptable=footer
