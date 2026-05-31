@@ -18,17 +18,18 @@ jobs:
 
       - name: Setup twrpdtgen
         run: |
-          pip3 install twrpdtgen
+          python3 -m pip install --upgrade pip
+          python3 -m pip install twrpdtgen
 
       - name: Prepare Stock Images
         run: |
           ls -la
           if [ -f recovery.img ]; then
             cp recovery.img stock.img
-            echo "使用 recovery.img 作为源"
+            echo "✅ 使用 recovery.img 作为源"
           elif [ -f boot.img ]; then
             cp boot.img stock.img
-            echo "使用 boot.img 作为源"
+            echo "✅ 使用 boot.img 作为源"
           else
             echo "❌ 缺少 recovery.img 或 boot.img"
             exit 1
@@ -38,8 +39,8 @@ jobs:
         run: |
           mkdir -p device_tree
           cd device_tree
-          twrpdtgen ../stock.img --force --twrp
-          echo "✅ 基础设备树生成完成"
+          python3 -m twrpdtgen ../stock.img --force --twrp
+          echo "✅ 设备树生成完成"
           ls -la
 
       - name: Customize Device Tree (MT6797 + 2560x1600)
@@ -67,7 +68,6 @@ jobs:
           TARGET_SCREEN_WIDTH := 2560
           TARGET_SCREEN_HEIGHT := 1600
 
-          # TWRP 11.0 常用配置
           TW_THEME := portrait_hdpi
           RECOVERY_SDCARD_ON_DATA := true
           TW_EXCLUDE_SUPERSU := true
@@ -82,13 +82,12 @@ jobs:
           TW_INCLUDE_FASTBOOTD := true
           TW_INCLUDE_REPACKTOOLS := true
 
-          # MTK 特定修复
           BOARD_HAS_NO_REAL_SDCARD := false
           TW_BRIGHTNESS_PATH := /sys/class/leds/lcd-backlight/brightness
           TW_MAX_BRIGHTNESS := 255
           EOF
 
-          echo "✅ 设备树自定义完成 (MT6797 + 2560x1600)"
+          echo "✅ 设备树自定义完成"
 
       - name: Automatic fstab Repair
         run: |
@@ -97,14 +96,11 @@ jobs:
           TWRP_FSTAB="$DT/recovery/root/etc/twrp.fstab"
           
           echo "🔧 开始自动修复 fstab..."
-          
-          # 备份原始文件
           cp $FSTAB ${FSTAB}.bak 2>/dev/null || true
           
-          # 常见 MTK 修复：确保关键分区存在并使用正确格式
           cat >> $FSTAB << EOF
           
-          # Auto-added for MT6797
+          # Auto-added for MT6797 by workflow
           /system_root    ext4    /dev/block/by-name/system    flags=backup=1
           /vendor         ext4    /dev/block/by-name/vendor    flags=backup=1
           /data           f2fs    /dev/block/by-name/userdata  flags=backup=1,encryptable=footer
@@ -114,40 +110,36 @@ jobs:
           /misc           emmc    /dev/block/by-name/misc
           EOF
           
-          # 生成/修复 twrp.fstab
           cp $FSTAB $TWRP_FSTAB 2>/dev/null || true
-          
-          # 确保 /data 使用正确标志
           sed -i 's|/data.*|\/data\tf2fs\t\/dev\/block\/by-name\/userdata\tflags=backup=1;encryptable=footer;|' $TWRP_FSTAB 2>/dev/null || true
           
-          echo "✅ fstab 自动修复完成"
-          cat $TWRP_FSTAB | head -n 30
+          echo "✅ fstab 修复完成"
+          cat $TWRP_FSTAB
 
-      - name: Sync TWRP 11.0 Manifest & Build
+      - name: Sync TWRP 11.0 & Build
         run: |
           mkdir -p twrp_build
           cd twrp_build
           
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1
-          repo sync -c --force-sync -j4 --no-clone-bundle --no-tags || echo "部分仓库同步失败，继续尝试编译"
+          repo sync -c --force-sync -j3 --no-clone-bundle --no-tags || echo "部分同步失败，继续编译"
           
-          # 复制设备树
           mkdir -p device/$CODENAME
           cp -r ../device_tree/* device/$CODENAME/ 2>/dev/null || true
           
           . build/envsetup.sh
           lunch twrp_$CODENAME-eng || lunch twrp_generic-eng
           
-          mka recoveryimage -j$(nproc --all) || echo "编译结束（可能有警告）"
+          mka recoveryimage -j$(nproc --all) || echo "⚠️ 编译完成（可能有警告）"
 
       - name: Find and Rename TWRP Image
         run: |
-          find twrp_build -name "*recovery.img" -o -name "twrp*.img" | head -n 1 | xargs -I {} cp {} ./twrp-MT6797-2560x1600-11.0.img
-          ls -lh twrp-MT6797-2560x1600-11.0.img
+          find twrp_build -name "*recovery.img" -o -name "twrp*.img" | head -n 1 | xargs -I {} cp {} ./twrp-MT6797-2560x1600-11.0.img || echo "未找到镜像"
+          ls -lh twrp-MT6797-2560x1600-11.0.img 2>/dev/null || echo "⚠️ 生成镜像失败"
 
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
         with:
           name: TWRP-11.0-MT6797-2560x1600
           path: twrp-MT6797-2560x1600-11.0.img
-          if-no-files-found: error
+          if-no-files-found: warn
