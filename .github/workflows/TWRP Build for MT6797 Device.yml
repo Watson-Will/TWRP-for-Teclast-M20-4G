@@ -51,12 +51,25 @@ jobs:
             exit 1
           fi
 
-      - name: Generate Device Tree
+      - name: Repack Clean Image & Generate Device Tree
         run: |
-          # 直接使用 magiskboot 解包出来的文件生成设备树
-          # twrpdtgen 支持直接读取 ramdisk.cpio
-          python3 -m twrpdtgen ramdisk.cpio -o device_tree
-          echo "✅ 设备树生成完成"
+          # 1. 使用 magiskboot 将刚刚解包的文件重新打包成一个干净的镜像
+          # 这样能完美保留原厂的 base, pagesize, offset 等所有底层参数
+          echo "🚀 正在使用 magiskboot 重新打包一个干净的镜像用于生成设备树..."
+          ./magiskboot repack boot.img clean_boot.img || true
+          
+          # 检查是否成功生成了 clean_boot.img
+          if [ ! -f "clean_boot.img" ]; then
+            echo "❌ 重新打包失败，请检查 magiskboot 解包的文件是否完整"
+            exit 1
+          fi
+          echo "✅ 干净镜像 clean_boot.img 打包成功！"
+          ls -la clean_boot.img
+
+          # 2. 使用这个干净的镜像来生成设备树
+          echo "🌳 正在调用 twrpdtgen 生成设备树..."
+          python3 -m twrpdtgen clean_boot.img -o device_tree
+          echo "✅ 设备树生成完成！"
           ls -la device_tree
 
       - name: Customize Device Tree
