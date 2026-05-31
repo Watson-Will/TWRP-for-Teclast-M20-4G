@@ -43,7 +43,8 @@ jobs:
           
           # 5. 关键步骤：在执行 gradlew 时，通过 -D 参数强制指定 Java 路径
           # 这一步可以绕过 Gradle Daemon 的缓存错误
-          ./gradlew unpack -Dorg.gradle.java.home=$JAVA_HOME
+          # 执行解包命令，并开启详细堆栈日志
+          ./gradlew unpack -Dorg.gradle.java.home=$JAVA_HOME --stacktrace
           
           echo "✅ 原厂 boot.img 解包完成，解包后的文件在 build/unzip_boot 目录下："
           ls -la build/unzip_boot
