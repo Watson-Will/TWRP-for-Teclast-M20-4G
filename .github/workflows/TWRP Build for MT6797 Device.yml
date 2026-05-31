@@ -16,20 +16,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils
 
-      - name: Setup environment and unpack boot.img
+      - name: Build unpackbootimg & mkbootimg from source
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 安装 Android 官方 SDK 工具包 (包含 unpackbootimg 和 mkbootimg)
+          # 1. 安装 gcc 编译器和基础依赖
           sudo apt-get update
-          sudo apt-get install -y android-sdk-platform-tools-base cpio gzip
+          sudo apt-get install -y build-essential cpio gzip
           
-          # 创建解包目录并进入
+          # 2. 下载 Android 原生的 mkbootimg 源码 (只有一个 .c 文件和一个 .h 文件)
+          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg mkbootimg_src
+          
+          # 3. 使用 gcc 直接编译出 unpackbootimg 和 mkbootimg 两个工具
+          cd mkbootimg_src
+          gcc -o unpackbootimg unpackbootimg.c
+          gcc -o mkbootimg mkbootimg.c
+          cd ..
+          
+          # 4. 将编译好的工具添加到系统环境变量，让终端能直接识别
+          echo "$(pwd)/mkbootimg_src" >> $GITHUB_PATH
+          
+          # 5. 使用我们刚刚自己编译的工具解包原厂 boot.img
           mkdir -p boot_out
           cd boot_out
-          
-          # 使用系统自带的 unpackbootimg 解包原厂 boot.img
           unpackbootimg -i ../boot.img
           
           echo "✅ 原厂 boot.img 解包完成，当前目录文件如下："
