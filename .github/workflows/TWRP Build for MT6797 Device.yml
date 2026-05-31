@@ -51,77 +51,112 @@ jobs:
             exit 1
           fi
 
-      - name: Repack Clean Image & Generate Device Tree
+      - name: Manually Generate Device Tree for MT6797
         run: |
-          # 1. 使用 magiskboot 将刚刚解包的文件重新打包成一个干净的镜像
-          # 这样能完美保留原厂的 base, pagesize, offset 等所有底层参数
-          echo "🚀 正在使用 magiskboot 重新打包一个干净的镜像用于生成设备树..."
-          ./magiskboot repack boot.img clean_boot.img || true
+          # 1. 创建设备树目录 (厂商/设备名)
+          DEVICE_PATH="device/teclast/m20_mt6797"
+          mkdir -p $DEVICE_PATH
           
-          # 检查是否成功生成了 clean_boot.img
-          if [ ! -f "clean_boot.img" ]; then
-            echo "❌ 重新打包失败，请检查 magiskboot 解包的文件是否完整"
-            exit 1
-          fi
-          echo "✅ 干净镜像 clean_boot.img 打包成功！"
-          ls -la clean_boot.img
+          echo "🌳 正在手动生成 TWRP 设备树配置..."
 
-          # 2. 使用这个干净的镜像来生成设备树
-          echo "🌳 正在调用 twrpdtgen 生成设备树..."
-          python3 -m twrpdtgen clean_boot.img -o device_tree
-          echo "✅ 设备树生成完成！"
-          ls -la device_tree
+          # 2. 生成 AndroidProducts.mk (产品入口文件)
+          cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
+          PRODUCT_MAKEFILES := \
+              $(LOCAL_DIR)/twrp_m20_mt6797.mk
+          EOF
 
-      - name: Customize Device Tree
-        run: |
-          DT="device_tree"
-          # 如果 twrpdtgen 输出结构变了，这里做兼容
-          if [ -d "$DT/output" ]; then
-            mv $DT/output/*/* $DT/ 2>/dev/null || true
-          fi
-          
-          # 尝试从解包出的 ramdisk 中提取代号，如果失败则使用默认值
-          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 | tr -cd '[:alnum:]._-' || echo "m20_mt6797")
-          
-          # 创建或覆盖 BoardConfig.mk
-          cat > $DT/BoardConfig.mk << EOF
-          DEVICE_PATH := \$(LOCAL_PATH)
+          # 3. 生成 twrp_m20_mt6797.mk (产品编译配置文件)
+          cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
+          $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
+          $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
 
+          PRODUCT_DEVICE := m20_mt6797
+          PRODUCT_NAME := twrp_m20_mt6797
           PRODUCT_BRAND := Teclast
-          PRODUCT_DEVICE := $CODENAME
-          PRODUCT_NAME := twrp_$CODENAME
           PRODUCT_MODEL := Teclast M20 4G
           PRODUCT_MANUFACTURER := Teclast
 
+          PRODUCT_PACKAGES += \
+              otapreopt_script \
+              cppreopts.sh \
+              update_engine \
+              update_verifier \
+              update_engine_sideload
+          EOF
+
+          # 4. 生成 BoardConfig.mk (最核心的硬件与分区配置文件)
+          cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
+          DEVICE_PATH := device/teclast/m20_mt6797
+
+          # 基础架构配置
           TARGET_ARCH := arm64
           TARGET_ARCH_VARIANT := armv8-a
           TARGET_CPU_ABI := arm64-v8a
-          TARGET_CPU_VARIANT := cortex-a72
+          TARGET_CPU_ABI2 := 
+          TARGET_CPU_VARIANT := generic
+          TARGET_CPU_VARIANT_RUNTIME := cortex-a72
 
+          TARGET_2ND_ARCH := arm
+          TARGET_2ND_ARCH_VARIANT := armv8-a
+          TARGET_2ND_CPU_ABI := armeabi-v7a
+          TARGET_2ND_CPU_ABI2 := armeabi
+          TARGET_2ND_CPU_VARIANT := generic
+          TARGET_2ND_CPU_VARIANT_RUNTIME := cortex-a53
+
+          # 平台配置 (MT6797 对应 Helio X20/X23/X27)
           TARGET_BOARD_PLATFORM := mt6797
           TARGET_BOOTLOADER_BOARD_NAME := mt6797
+          TARGET_NO_BOOTLOADER := true
 
-          TARGET_SCREEN_WIDTH := 2560
-          TARGET_SCREEN_HEIGHT := 1600
+          # 内核配置
+          BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2
+          BOARD_KERNEL_BASE := 0x40078000
+          BOARD_KERNEL_PAGESIZE := 2048
+          BOARD_KERNEL_OFFSET := 0x00008000
+          BOARD_RAMDISK_OFFSET := 0x11a88000
+          BOARD_KERNEL_TAGS_OFFSET := 0x07808000
+          BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
 
+          # 分区表配置 (根据 MT6797 常见布局设定，后续可根据实际 fstab 微调)
+          BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
+          BOARD_RECOVERYIMAGE_PARTITION_SIZE := 33554432
+          BOARD_HAS_LARGE_FILESYSTEM := true
+          BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
+          BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
+          BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := ext4
+          TARGET_COPY_OUT_VENDOR := vendor
+
+          # TWRP 专属配置
           TW_THEME := portrait_hdpi
           RECOVERY_SDCARD_ON_DATA := true
-          TW_EXCLUDE_SUPERSU := true
-          TW_INCLUDE_CRYPTO := true
+          TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
+          TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
+          TW_MAX_BRIGHTNESS := 255
+          TW_DEFAULT_BRIGHTNESS := 120
+          TW_USE_TOOLBOX := true
           TW_INCLUDE_NTFS_3G := true
           TW_INCLUDE_FUSE_EXFAT := true
-          TW_HAS_MTP := true
-          TW_NO_REBOOT_BOOTLOADER := true
-          TW_USE_TOOLBOX := true
-          TW_NO_LEGACY_PROPS := true
-          TW_INCLUDE_FASTBOOTD := true
-
-          BOARD_HAS_NO_REAL_SDCARD := false
-          TW_BRIGHTNESS_PATH := /sys/class/leds/lcd-backlight/brightness
-          TW_MAX_BRIGHTNESS := 255
+          TW_EXCLUDE_SUPERSU := true
+          TW_INCLUDE_CRYPTO := true
+          TW_EXTRA_LANGUAGES := true
+          TW_SCREEN_BLANK_ON_BOOT := true
           EOF
 
-          echo "✅ 设备树自定义完成 (CODENAME: $CODENAME)"
+          # 5. 生成 recovery.fstab (分区挂载表)
+          mkdir -p $DEVICE_PATH/recovery/root/etc
+          cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
+          /boot           emmc    /dev/block/by-name/boot           flags=backup=1
+          /recovery       emmc    /dev/block/by-name/recovery       flags=backup=1
+          /system         ext4    /dev/block/by-name/system         flags=backup=1
+          /vendor         ext4    /dev/block/by-name/vendor         flags=backup=1
+          /data           f2fs    /dev/block/by-name/userdata       flags=backup=1,encryptable=footer
+          /cache          ext4    /dev/block/by-name/cache          flags=backup=1
+          /sdcard         vfat    /dev/block/mmcblk1p1              flags=display="Micro SDcard";storage;wipeingui;removable
+          /usb-otg        auto    /dev/block/sda1                   flags=display="USB-OTG";storage;wipeingui;removable
+          EOF
+
+          echo "✅ 手动设备树生成完成！目录结构如下："
+          find $DEVICE_PATH -type f
 
       - name: Automatic fstab Repair
         run: |
