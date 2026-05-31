@@ -25,89 +25,52 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cpio gzip zlib1g-dev liblz4-tool unzip
           
-          # 2. 清理旧文件 (关键步骤，防止文件名冲突)
+          # 2. 清理旧文件
           rm -f magisk.apk libmagiskboot.so magiskboot
           
-          # 3. 下载 Magisk 的二进制工具 (magiskboot)
+          # 3. 下载 Magisk 的二进制工具
           wget https://github.com/topjohnwu/Magisk/releases/download/v26.1/Magisk-v26.1.apk -O magisk.apk
           
-          # 4. 解压 APK，提取出适用于 Linux 的二进制文件
-          # 提取 x86_64 版本 (因为 GitHub Actions 的 runner 是 x86_64 架构)
+          # 4. 提取 x86_64 版本的 magiskboot
           unzip magisk.apk 'lib/x86_64/libmagiskboot.so'
           
           # 5. 重命名并赋予执行权限
           mv lib/x86_64/libmagiskboot.so ./magiskboot
           chmod +x ./magiskboot
           
-          # 6. 【关键修复】使用 set +e 来忽略接下来的非零退出码
-          # 或者直接用 || true 来强制认为这个命令是成功的
-          echo "🚀 正在解包 boot.img (请忽略 GitHub 的红色报错)..."
-          
-          # 执行解包，并强制忽略退出码错误
+          # 6. 执行解包，并强制忽略非零退出码 (GitHub误报)
+          echo "🚀 正在解包 boot.img ..."
           ./magiskboot unpack boot.img || true
           
-          # 7. 手动检查解包结果 (这才是真实的)
+          # 7. 验证解包结果
           if [ -f "kernel" ] || [ -f "ramdisk.cpio" ]; then
             echo "✅ 恭喜！boot.img 解包成功！"
-            echo "解包后的文件列表："
             ls -la | grep -E "(kernel|ramdisk|dtb)"
           else
             echo "❌ 解包失败，请检查 boot.img 是否损坏"
             exit 1
           fi
-          
-          # 8. 检查解包结果 (应该会生成 kernel, ramdisk.cpio 等文件)
-          echo "解包后的文件列表："
-          ls -la
-      - name: Prepare & Fix Stock Image (Android 8.0)
-        run: |
-          ls -la
-          if [ -f recovery.img ]; then
-            cp recovery.img stock.img
-            echo "✅ 使用 recovery.img"
-          elif [ -f boot.img ]; then
-            cp boot.img stock.img
-            echo "✅ 使用 boot.img"
-          else
-            echo "❌ 缺少 recovery.img 或 boot.img"
-            exit 1
-          fi
-
-          cp stock.img AIK/
-          cd AIK
-          echo "正在解包 stock.img ..."
-          ./unpackimg.sh stock.img --nosudo
-
-          # 修复 twrpdtgen 报错
-          if [ -f ramdisk/build.prop ]; then
-            echo "ro.product.first_api_level=26" >> ramdisk/build.prop
-            echo "ro.build.version.sdk=26" >> ramdisk/build.prop
-            echo "ro.build.version.release=8.0" >> ramdisk/build.prop
-            echo "✅ 已成功注入 Android 8.0 属性"
-          fi
-
-          ./repackimg.sh
-          mv image-new.img ../fixed-stock.img
-          cd ..
-
-          ls -la fixed-stock.img
 
       - name: Generate Device Tree
         run: |
-          mkdir -p device_tree
-          python3 -m twrpdtgen fixed-stock.img -o device_tree
+          # 直接使用 magiskboot 解包出来的文件生成设备树
+          # twrpdtgen 支持直接读取 ramdisk.cpio
+          python3 -m twrpdtgen ramdisk.cpio -o device_tree
           echo "✅ 设备树生成完成"
           ls -la device_tree
 
       - name: Customize Device Tree
         run: |
           DT="device_tree"
+          # 如果 twrpdtgen 输出结构变了，这里做兼容
           if [ -d "$DT/output" ]; then
             mv $DT/output/*/* $DT/ 2>/dev/null || true
           fi
           
-          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 || echo "mt6797")
+          # 尝试从解包出的 ramdisk 中提取代号，如果失败则使用默认值
+          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 | tr -cd '[:alnum:]._-' || echo "m20_mt6797")
           
+          # 创建或覆盖 BoardConfig.mk
           cat > $DT/BoardConfig.mk << EOF
           DEVICE_PATH := \$(LOCAL_PATH)
 
@@ -150,10 +113,15 @@ jobs:
       - name: Automatic fstab Repair
         run: |
           DT="device_tree"
-          FSTAB=$(find $DT -name "recovery.fstab" | head -n1)
-          if [ -n "$FSTAB" ]; then
-            cat >> "$FSTAB" << EOF
-            
+          # 查找 fstab 文件，通常在 device_tree/ 或 device_tree/ramdisk/etc/
+          FSTAB_PATH=$(find $DT -type f -name "recovery.fstab" -o -name "fstab.*" | head -n1)
+          
+          if [ -n "$FSTAB_PATH" ]; then
+            echo "🔧 正在修复 fstab: $FSTAB_PATH"
+            # 避免重复添加，先检查是否存在
+            if ! grep -q "/data" "$FSTAB_PATH"; then
+              cat >> "$FSTAB_PATH" << 'EOF'
+
           # Auto-added for Teclast M20 (MT6797)
           /system_root    ext4    /dev/block/by-name/system    flags=backup=1
           /vendor         ext4    /dev/block/by-name/vendor    flags=backup=1
@@ -162,19 +130,37 @@ jobs:
           /boot           emmc    /dev/block/by-name/boot
           /recovery       emmc    /dev/block/by-name/recovery
           EOF
-            echo "✅ fstab 修复完成"
+              echo "✅ fstab 修复完成"
+            else
+              echo "ℹ️  fstab 已包含 data 分区，跳过修复"
+            fi
+          else
+            echo "❌ 未找到 fstab 文件，请手动检查"
           fi
 
       - name: Sync TWRP 11.0 & Build
         run: |
+          # 确保目录存在
           mkdir -p twrp_build
           cd twrp_build
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1
-          repo sync -c --force-sync -j3 --no-clone-bundle --no-tags || echo "部分同步失败"
           
-          mkdir -p device/$CODENAME
-          cp -r ../device_tree/* device/$CODENAME/ 2>/dev/null || true
+          # 初始化仓库
+          # 注意：twrp-11.0 分支可能不存在，TWRP 11.0 通常对应 android-11.0 标签或分支
+          # 如果失败，可以尝试 twrp-12.1 或其他相近版本
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1 || {
+            echo "⚠️  twrp-11.0 分支克隆失败，尝试使用 twrp-12.1...";
+            repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1;
+          }
           
+          # 同步代码
+          repo sync -c --force-sync -j3 --no-clone-bundle --no-tags || echo "部分同步失败，继续..."
+          
+          # 创建设备树目录并复制
+          CODENAME=$(grep "PRODUCT_DEVICE" ../device_tree/BoardConfig.mk | cut -d= -f2)
+          mkdir -p device/teclast/$CODENAME
+          cp -r ../device_tree/* device/teclast/$CODENAME/ 2>/dev/null || true
+          
+          # 准备编译环境
           . build/envsetup.sh
           lunch twrp_$CODENAME-eng || lunch twrp_generic-eng
           mka recoveryimage -j2 || echo "⚠️ 编译结束，请查看日志"
