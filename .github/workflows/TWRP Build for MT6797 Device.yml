@@ -21,25 +21,33 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 安装基础工具 (Magisk 需要这些来处理压缩)
+          # 1. 安装基础工具
           sudo apt-get update
-          sudo apt-get install -y cpio gzip zlib1g-dev liblz4-tool
+          sudo apt-get install -y cpio gzip zlib1g-dev liblz4-tool unzip
           
-          # 2. 下载 Magisk 的二进制工具 (magiskboot)
-          # 这里使用 Magisk-v26.1 版本，非常稳定
+          # 2. 清理旧文件 (关键步骤，防止文件名冲突)
+          rm -f magisk.apk libmagiskboot.so magiskboot
+          
+          # 3. 下载 Magisk 的二进制工具 (magiskboot)
           wget https://github.com/topjohnwu/Magisk/releases/download/v26.1/Magisk-v26.1.apk -O magisk.apk
           
-          # 3. 解压 APK，提取出适用于 Linux 的二进制文件
-          unzip magisk.apk 'lib/*/libmagiskboot.so'
-          # 重命名并赋予执行权限 (根据你的架构，通常是 x86_64)
-          mv lib/*/libmagiskboot.so magiskboot
-          chmod +x magiskboot
+          # 4. 解压 APK，提取出适用于 Linux 的二进制文件
+          # 提取 x86_64 版本 (因为 GitHub Actions 的 runner 是 x86_64 架构)
+          unzip magisk.apk 'lib/x86_64/libmagiskboot.so'
           
-          # 4. 使用 magiskboot 直接解包 boot.img
-          # --unpack 参数会自动识别内核、ramdisk 等
+          # 5. 重命名并赋予执行权限
+          # 注意：这里先确保路径正确，直接移动并重命名
+          mv lib/x86_64/libmagiskboot.so ./magiskboot
+          chmod +x ./magiskboot
+          
+          # 6. 验证工具是否正常
+          echo "Magiskboot 版本信息："
+          ./magiskboot --version
+          
+          # 7. 使用 magiskboot 直接解包 boot.img
           ./magiskboot unpack boot.img
           
-          # 5. 检查解包结果
+          # 8. 检查解包结果 (应该会生成 kernel, ramdisk.cpio 等文件)
           echo "解包后的文件列表："
           ls -la
       - name: Prepare & Fix Stock Image (Android 8.0)
