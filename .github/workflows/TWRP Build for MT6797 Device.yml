@@ -21,36 +21,43 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 克隆 AIK 仓库 (去掉 --depth=1 以确保完整性)
-          git clone https://github.com/osm0sis/Android-Image-Kitchen.git AIK
-          
-          # 2. 进入目录
+          # 1. 克隆 AIK 仓库 (使用主分支，更稳定)
+          git clone --depth=1 https://github.com/osm0sis/Android-Image-Kitchen.git AIK
           cd AIK
           
-          # 3. 强制修复所有脚本和二进制文件的权限 (关键步骤)
-          # 包括隐藏文件和多层目录
-          find . -type f -exec chmod 755 {} \;
+          # 2. 查找 unpackbootimg 工具的实际位置
+          echo "🔍 正在搜索 unpackbootimg 工具..."
+          find . -name "unpackbootimg*" -type f -executable 2>/dev/null
           
-          # 4. 检查关键工具是否存在
-          if [ ! -f "bin/linux/x86_64/unpackbootimg" ]; then
-            echo "⚠️ 警告：标准工具未找到。尝试查找替代文件名..."
-            
-            # 有些版本可能文件名不同，尝试软链接或重命名
-            if [ -f "bin/linux/x86_64/unpackbootimg.py" ]; then
-              echo "找到 Python 版本，创建可执行链接..."
-              ln -s unpackbootimg.py unpackbootimg
-            elif [ -f "unpackbootimg" ]; then
-              mv unpackbootimg bin/linux/x86_64/
-            else
-              echo "❌ 致命错误：无法在 $(pwd)/bin/linux/x86_64/ 中找到 unpackbootimg。"
-              echo "列出 bin 目录内容以供调试："
-              ls -la bin/linux/x86_64/
-              exit 1
-            fi
+          # 3. 根据常见结构创建必要的目录软链接或移动文件
+          # 情况 A: 如果工具在 bin/ 目录下 (扁平结构)
+          if [ -f "bin/unpackbootimg" ]; then
+            echo "🛠️ 检测到扁平结构，正在修复路径..."
+            mkdir -p bin/linux/x86_64
+            cp bin/unpackbootimg bin/linux/x86_64/
+            cp bin/repackbootimg bin/linux/x86_64/ 2>/dev/null || true
           fi
           
-          # 5. 确保顶层脚本可执行
-          chmod +x unpackimg.sh repackimg.sh
+          # 情况 B: 如果工具缺失，尝试使用 Python 版本 (如果存在)
+          if [ ! -f "bin/linux/x86_64/unpackbootimg" ] && [ -f "unpackbootimg.py" ]; then
+            echo "📦 使用 Python 版本作为替代..."
+            mkdir -p bin/linux/x86_64
+            cp unpackbootimg.py bin/linux/x86_64/unpackbootimg
+            chmod +x bin/linux/x86_64/unpackbootimg
+          fi
+          
+          # 4. 确保所有脚本可执行
+          chmod +x *.sh bin/* 2>/dev/null || true
+          
+          # 5. 最终检查
+          if [ ! -f "bin/linux/x86_64/unpackbootimg" ]; then
+            echo "❌ 致命错误：无法定位或恢复 unpackbootimg 工具。"
+            echo "当前 AIK/bin 目录结构："
+            find . -path "*/bin/*" -type f
+            exit 1
+          fi
+          
+          echo "✅ AIK 环境准备就绪"
           cd ..
 
       - name: Prepare & Fix Stock Image (Android 8.0)
