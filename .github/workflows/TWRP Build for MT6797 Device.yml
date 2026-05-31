@@ -19,28 +19,19 @@ jobs:
       - name: Setup build environment and unpack boot.img
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install twrpdtgen
+          # 安装 twrpdtgen 以及用于打包 boot.img 的 Python 库
+          python3 -m pip install twrpdtgen bootimg
           
-          # 1. 安装 AOSP 官方工具链的编译依赖
+          # 1. 安装系统基础工具
           sudo apt-get update
-          sudo apt-get install -y build-essential liblz4-tool cpio zlib1g-dev
+          sudo apt-get install -y cpio gzip
           
-          # 2. 下载并编译 AOSP 原生的 unpackbootimg 和 mkbootimg 工具
-          # 使用官方 platform_system_core 仓库
-          git clone --depth=1 https://android.googlesource.com/platform/system/core core_src
-          cd core_src/libsparse
-          make -j4
-          cd ../mkbootimg
-          make -j4
-          cd ../../..
-          
-          # 3. 将编译好的工具添加到环境变量
-          echo "$(pwd)/core_src/mkbootimg" >> $GITHUB_PATH
-          
-          # 4. 手动解包 boot.img (替代 AIK 的 unpackimg.sh)
+          # 2. 使用系统自带的 unpackbootimg 解包原厂 boot.img
           mkdir -p boot_out
-          # 使用编译好的 unpackbootimg 解包原厂 boot.img
-          ./core_src/mkbootimg/unpackbootimg -i boot.img -o boot_out
+          # Ubuntu 自带的 unpackbootimg 会自动将文件解包到当前目录，我们提前切进去
+          cd boot_out
+          unpackbootimg -i ../boot.img
+          cd ..
           
           echo "✅ 原厂 boot.img 解包完成，文件列表如下："
           ls -la boot_out
