@@ -36,16 +36,25 @@ jobs:
           unzip magisk.apk 'lib/x86_64/libmagiskboot.so'
           
           # 5. 重命名并赋予执行权限
-          # 注意：这里先确保路径正确，直接移动并重命名
           mv lib/x86_64/libmagiskboot.so ./magiskboot
           chmod +x ./magiskboot
           
-          # 6. 验证工具是否正常
-          echo "Magiskboot 版本信息："
-          ./magiskboot --version
+          # 6. 【关键修复】使用 set +e 来忽略接下来的非零退出码
+          # 或者直接用 || true 来强制认为这个命令是成功的
+          echo "🚀 正在解包 boot.img (请忽略 GitHub 的红色报错)..."
           
-          # 7. 使用 magiskboot 直接解包 boot.img
-          ./magiskboot unpack boot.img
+          # 执行解包，并强制忽略退出码错误
+          ./magiskboot unpack boot.img || true
+          
+          # 7. 手动检查解包结果 (这才是真实的)
+          if [ -f "kernel" ] || [ -f "ramdisk.cpio" ]; then
+            echo "✅ 恭喜！boot.img 解包成功！"
+            echo "解包后的文件列表："
+            ls -la | grep -E "(kernel|ramdisk|dtb)"
+          else
+            echo "❌ 解包失败，请检查 boot.img 是否损坏"
+            exit 1
+          fi
           
           # 8. 检查解包结果 (应该会生成 kernel, ramdisk.cpio 等文件)
           echo "解包后的文件列表："
