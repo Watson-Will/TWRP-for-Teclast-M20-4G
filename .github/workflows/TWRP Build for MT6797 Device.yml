@@ -16,25 +16,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils
 
-      - name: Setup build environment and unpack boot.img
+      - name: Setup environment and unpack boot.img
         run: |
           python3 -m pip install --upgrade pip
-          # 安装 twrpdtgen 以及用于打包 boot.img 的 Python 库
-          python3 -m pip install twrpdtgen bootimg
+          python3 -m pip install twrpdtgen
           
-          # 1. 安装系统基础工具
+          # 安装 Android 原生的镜像处理工具 (包含 unpackbootimg 和 mkbootimg)
           sudo apt-get update
-          sudo apt-get install -y cpio gzip
+          sudo apt-get install -y android-tools-fsutils cpio gzip
           
-          # 2. 使用系统自带的 unpackbootimg 解包原厂 boot.img
+          # 创建解包目录并进入
           mkdir -p boot_out
-          # Ubuntu 自带的 unpackbootimg 会自动将文件解包到当前目录，我们提前切进去
           cd boot_out
-          unpackbootimg -i ../boot.img
-          cd ..
           
-          echo "✅ 原厂 boot.img 解包完成，文件列表如下："
-          ls -la boot_out
+          # 使用系统自带的 unpackbootimg 解包原厂 boot.img
+          # 它会自动将 kernel, ramdisk 以及 base, cmdline 等参数文件释放到当前目录
+          unpackbootimg -i ../boot.img
+          
+          echo "✅ 原厂 boot.img 解包完成，当前目录文件如下："
+          ls -la
 
       - name: Prepare & Fix Stock Image (Android 8.0)
         run: |
