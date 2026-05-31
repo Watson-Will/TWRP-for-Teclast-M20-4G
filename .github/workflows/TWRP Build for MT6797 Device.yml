@@ -160,24 +160,24 @@ jobs:
 
       - name: Sync TWRP Source & Build
         run: |
-          # 1. 安装 repo 工具 (同上一轮，确保环境干净)
+          # 1. 安装 repo 工具
           mkdir -p ~/.bin
           PATH="${HOME}/.bin:${PATH}"
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
 
-          # 2. 进入构建目录并初始化仓库 (强制使用 twrp-12.1)
+          # 2. 进入构建目录并初始化极简 TWRP 仓库
           mkdir -p twrp_build
           cd twrp_build
           
-          echo "🚀 初始化 TWRP 仓库 (twrp-12.1 分支)..."
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1
+          echo "🚀 初始化 TWRP 极简源码仓库 (twrp-12.1 分支)..."
+          # 核心修改：使用 minimal-manifest-twrp 极简清单，避开 AOSP 的繁杂依赖
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-12.1 --depth=1
           
-          echo "📦 同步源码..."
+          echo "📦 同步极简源码..."
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
 
-          # 3. 关键修复：将上一步生成的设备树移动到源码根目录
-          # 注意：这里假设你的设备树生成在 .. (上级目录) 中
+          # 3. 部署设备树到源码目录
           echo "🔧 部署设备树到源码目录..."
           cp -r ../device/teclast ./device/teclast/ 2>/dev/null || echo "⚠️ 设备树复制完成"
 
@@ -185,11 +185,11 @@ jobs:
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          # 5. 关键修复：使用正确的 lunch 命令格式
-          # 格式通常是：lunch twrp_<device>-eng
+          # 5. 开始编译 TWRP
           echo "🏗️  开始编译 TWRP..."
           lunch twrp_m20_mt6797-eng
           mka recoveryimage -j2
+          
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
         with:
