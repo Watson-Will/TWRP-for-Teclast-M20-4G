@@ -21,15 +21,17 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 安装 JDK 17 (解决 Gradle 版本不兼容问题)
+          # 1. 安装 JDK 17
           sudo apt-get update
           sudo apt-get install -y openjdk-17-jdk cpio gzip
           
-          # 2. 将系统的默认 Java 环境切换为 JDK 17
-          sudo update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java
-          sudo update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac
+          # 2. 关键步骤：强制设置 JAVA_HOME 环境变量
+          # Ubuntu 22.04/24.04 上 JDK 17 的标准路径通常是这个
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          export PATH=$JAVA_HOME/bin:$PATH
           
-          # 验证 Java 版本，确保输出为 17.x.x
+          # 验证当前终端会话的 Java 版本
+          echo "当前 JAVA_HOME: $JAVA_HOME"
           java -version
           
           # 3. 下载 Android_boot_image_editor 工具
@@ -39,12 +41,12 @@ jobs:
           # 4. 将原厂 boot.img 拷贝进来并改名为 stock.img
           cp ../boot.img stock.img
           
-          # 5. 执行解包命令
-          ./gradlew unpack
+          # 5. 关键步骤：在执行 gradlew 时，通过 -D 参数强制指定 Java 路径
+          # 这一步可以绕过 Gradle Daemon 的缓存错误
+          ./gradlew unpack -Dorg.gradle.java.home=$JAVA_HOME
           
           echo "✅ 原厂 boot.img 解包完成，解包后的文件在 build/unzip_boot 目录下："
           ls -la build/unzip_boot
-
       - name: Prepare & Fix Stock Image (Android 8.0)
         run: |
           ls -la
