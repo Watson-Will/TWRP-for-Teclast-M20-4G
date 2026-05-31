@@ -16,34 +16,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils
 
-      - name: Build unpackbootimg & mkbootimg from source
+      - name: Setup Java and unpack boot.img
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 安装 gcc 编译器和基础依赖
+          # 1. 安装 Java 运行环境 (该工具需要 Java) 和基础解压工具
           sudo apt-get update
-          sudo apt-get install -y build-essential cpio gzip
+          sudo apt-get install -y default-jre cpio gzip
           
-          # 2. 下载 Android 原生的 mkbootimg 源码 (只有一个 .c 文件和一个 .h 文件)
-          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg mkbootimg_src
+          # 2. 下载强大的第三方解包/打包工具 Android_boot_image_editor
+          git clone --depth=1 https://github.com/cfig/Android_boot_image_editor.git boot_editor
+          cd boot_editor
           
-          # 3. 使用 gcc 直接编译出 unpackbootimg 和 mkbootimg 两个工具
-          cd mkbootimg_src
-          gcc -o unpackbootimg unpackbootimg.c
-          gcc -o mkbootimg mkbootimg.c
-          cd ..
+          # 3. 将原厂 boot.img 拷贝进来并改名为 stock.img (该工具的默认输入文件名)
+          cp ../boot.img stock.img
           
-          # 4. 将编译好的工具添加到系统环境变量，让终端能直接识别
-          echo "$(pwd)/mkbootimg_src" >> $GITHUB_PATH
+          # 4. 执行解包命令
+          ./gradlew unpack
           
-          # 5. 使用我们刚刚自己编译的工具解包原厂 boot.img
-          mkdir -p boot_out
-          cd boot_out
-          unpackbootimg -i ../boot.img
-          
-          echo "✅ 原厂 boot.img 解包完成，当前目录文件如下："
-          ls -la
+          echo "✅ 原厂 boot.img 解包完成，解包后的文件在 build/unzip_boot 目录下："
+          ls -la build/unzip_boot
 
       - name: Prepare & Fix Stock Image (Android 8.0)
         run: |
