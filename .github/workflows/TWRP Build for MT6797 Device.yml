@@ -16,52 +16,63 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio android-sdk-platform-tools-common gperf libxml2-utils
 
-      - name: Setup twrpdtgen
+      - name: Setup Tools
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
+          git clone https://github.com/osm0sis/Android-Image-Kitchen.git AIK
+          cd AIK && chmod +x *.sh
 
-      - name: Prepare Stock Images + Debug
+      - name: Prepare Stock Image + Fix for Android 8.0
         run: |
-          echo "当前目录：$(pwd)"
           ls -la
-          
           if [ -f recovery.img ]; then
             cp recovery.img stock.img
-            echo "✅ 已复制 recovery.img → stock.img"
+            echo "✅ 使用 recovery.img"
           elif [ -f boot.img ]; then
             cp boot.img stock.img
-            echo "✅ 已复制 boot.img → stock.img"
+            echo "✅ 使用 boot.img"
           else
-            echo "❌ 错误：仓库根目录中没有找到 recovery.img 或 boot.img"
-            echo "请确保你已上传其中一个文件到仓库根目录"
+            echo "❌ 缺少 recovery.img 或 boot.img"
             exit 1
           fi
-          
-          ls -la stock.img
+
+          # 使用 AIK 解包
+          cp stock.img AIK/
+          cd AIK
+          ./unpackimg.sh stock.img
+
+          # 注入缺失的 first_api_level (Android 8.0 = 26)
+          BUILD_PROP="ramdisk/build.prop"
+          if [ -f "$BUILD_PROP" ]; then
+            echo "ro.product.first_api_level=26" >> "$BUILD_PROP"
+            echo "ro.build.version.sdk=26" >> "$BUILD_PROP"
+            echo "✅ 已注入 first_api_level=26"
+          else
+            echo "⚠️ 未找到 build.prop，使用备用方案"
+          fi
+
+          # 重新打包
+          ./repackimg.sh
+          mv image-new.img ../fixed-stock.img
+          cd ..
 
       - name: Generate Device Tree using twrpdtgen
         run: |
-          echo "当前目录：$(pwd)"
-          ls -la
-          
           mkdir -p device_tree
-          
-          # 使用绝对路径确保找到 stock.img
-          python3 -m twrpdtgen "$(pwd)/stock.img" -o "$(pwd)/device_tree"
-          
+          python3 -m twrpdtgen fixed-stock.img -o device_tree
           echo "✅ 设备树生成完成"
           ls -la device_tree
 
-      - name: Customize Device Tree (MT6797 + 2560x1600)
+      - name: Customize Device Tree
         run: |
           DT="device_tree"
-          # 兼容 twrpdtgen 输出结构
+          # 处理输出目录结构
           if [ -d "$DT/output" ]; then
             mv $DT/output/*/* $DT/ 2>/dev/null || true
           fi
           
-          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 || echo "mt6797")
+          CODENAME=$(find $DT -name "default.prop" -exec grep "ro.product.device" {} + 2>/dev/null | head -n1 | cut -d= -f2 || echo "mt6797_tablet")
           
           cat > $DT/BoardConfig.mk << EOF
           DEVICE_PATH := \$(LOCAL_PATH)
@@ -69,8 +80,8 @@ jobs:
           PRODUCT_BRAND := Android
           PRODUCT_DEVICE := $CODENAME
           PRODUCT_NAME := twrp_$CODENAME
-          PRODUCT_MODEL := MT6797 Tablet
-          PRODUCT_MANUFACTURER := MTK
+          PRODUCT_MODEL := Teclast M20 4G
+          PRODUCT_MANUFACTURER := Teclast
 
           TARGET_ARCH := arm64
           TARGET_ARCH_VARIANT := armv8-a
@@ -93,9 +104,7 @@ jobs:
           TW_NO_REBOOT_BOOTLOADER := true
           TW_USE_TOOLBOX := true
           TW_NO_LEGACY_PROPS := true
-          TW_NO_BIND_MOUNT := true
           TW_INCLUDE_FASTBOOTD := true
-          TW_INCLUDE_REPACKTOOLS := true
 
           BOARD_HAS_NO_REAL_SDCARD := false
           TW_BRIGHTNESS_PATH := /sys/class/leds/lcd-backlight/brightness
@@ -108,23 +117,16 @@ jobs:
         run: |
           DT="device_tree"
           FSTAB=$(find $DT -name "recovery.fstab" | head -n1)
-          
-          if [ -z "$FSTAB" ]; then
-            echo "⚠️ 未找到 recovery.fstab，跳过部分修复"
-          else
-            echo "🔧 修复 fstab: $FSTAB"
-            cp "$FSTAB" "${FSTAB}.bak" 2>/dev/null || true
-            
+          if [ -n "$FSTAB" ]; then
             cat >> "$FSTAB" << EOF
             
-          # Auto-added for MT6797
+          # Auto-added for MT6797 / Teclast M20
           /system_root    ext4    /dev/block/by-name/system    flags=backup=1
           /vendor         ext4    /dev/block/by-name/vendor    flags=backup=1
           /data           f2fs    /dev/block/by-name/userdata  flags=backup=1,encryptable=footer
           /cache          ext4    /dev/block/by-name/cache     flags=backup=1
           /boot           emmc    /dev/block/by-name/boot
           /recovery       emmc    /dev/block/by-name/recovery
-          /misc           emmc    /dev/block/by-name/misc
           EOF
             echo "✅ fstab 修复完成"
           fi
@@ -133,7 +135,6 @@ jobs:
         run: |
           mkdir -p twrp_build
           cd twrp_build
-          
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1
           repo sync -c --force-sync -j3 --no-clone-bundle --no-tags || echo "部分同步失败"
           
@@ -142,17 +143,11 @@ jobs:
           
           . build/envsetup.sh
           lunch twrp_$CODENAME-eng || lunch twrp_generic-eng
-          
-          mka recoveryimage -j2 || echo "⚠️ 编译结束，请查看日志"
-
-      - name: Find and Rename TWRP Image
-        run: |
-          find twrp_build -name "*recovery.img" -o -name "twrp*.img" | head -n1 | xargs -I {} cp {} ./twrp-MT6797-2560x1600-11.0.img || echo "未找到镜像"
-          ls -lh twrp-MT6797-2560x1600-11.0.img 2>/dev/null || echo "⚠️ 编译未生成镜像"
+          mka recoveryimage -j2 || echo "⚠️ 编译完成，请检查日志"
 
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
         with:
-          name: TWRP-11.0-MT6797-2560x1600
-          path: twrp-MT6797-2560x1600-11.0.img
+          name: TWRP-11.0-MT6797-Teclast-M20
+          path: twrp_build/out/target/product/*/recovery.img
           if-no-files-found: warn
