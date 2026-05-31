@@ -21,16 +21,15 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 安装 Android 原生的镜像处理工具 (包含 unpackbootimg 和 mkbootimg)
+          # 安装 Android 官方 SDK 工具包 (包含 unpackbootimg 和 mkbootimg)
           sudo apt-get update
-          sudo apt-get install -y android-tools-fsutils cpio gzip
+          sudo apt-get install -y android-sdk-platform-tools-base cpio gzip
           
           # 创建解包目录并进入
           mkdir -p boot_out
           cd boot_out
           
           # 使用系统自带的 unpackbootimg 解包原厂 boot.img
-          # 它会自动将 kernel, ramdisk 以及 base, cmdline 等参数文件释放到当前目录
           unpackbootimg -i ../boot.img
           
           echo "✅ 原厂 boot.img 解包完成，当前目录文件如下："
