@@ -16,38 +16,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils
 
-      - name: Setup Java 17 and unpack boot.img
+      - name: Setup & Unpack with Magiskboot
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 安装 JDK 17
+          # 1. 安装基础工具 (Magisk 需要这些来处理压缩)
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk cpio gzip
+          sudo apt-get install -y cpio gzip zlib1g-dev liblz4-tool
           
-          # 2. 关键步骤：强制设置 JAVA_HOME 环境变量
-          # Ubuntu 22.04/24.04 上 JDK 17 的标准路径通常是这个
-          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-          export PATH=$JAVA_HOME/bin:$PATH
+          # 2. 下载 Magisk 的二进制工具 (magiskboot)
+          # 这里使用 Magisk-v26.1 版本，非常稳定
+          wget https://github.com/topjohnwu/Magisk/releases/download/v26.1/Magisk-v26.1.apk -O magisk.apk
           
-          # 验证当前终端会话的 Java 版本
-          echo "当前 JAVA_HOME: $JAVA_HOME"
-          java -version
+          # 3. 解压 APK，提取出适用于 Linux 的二进制文件
+          unzip magisk.apk 'lib/*/libmagiskboot.so'
+          # 重命名并赋予执行权限 (根据你的架构，通常是 x86_64)
+          mv lib/*/libmagiskboot.so magiskboot
+          chmod +x magiskboot
           
-          # 3. 下载 Android_boot_image_editor 工具
-          git clone --depth=1 https://github.com/cfig/Android_boot_image_editor.git boot_editor
-          cd boot_editor
+          # 4. 使用 magiskboot 直接解包 boot.img
+          # --unpack 参数会自动识别内核、ramdisk 等
+          ./magiskboot unpack boot.img
           
-          # 4. 将原厂 boot.img 拷贝进来并改名为 stock.img
-          cp ../boot.img stock.img
-          
-          # 5. 关键步骤：在执行 gradlew 时，通过 -D 参数强制指定 Java 路径
-          # 这一步可以绕过 Gradle Daemon 的缓存错误
-          # 执行解包命令，并开启详细堆栈日志
-          ./gradlew unpack -Dorg.gradle.java.home=$JAVA_HOME --stacktrace
-          
-          echo "✅ 原厂 boot.img 解包完成，解包后的文件在 build/unzip_boot 目录下："
-          ls -la build/unzip_boot
+          # 5. 检查解包结果
+          echo "解包后的文件列表："
+          ls -la
       - name: Prepare & Fix Stock Image (Android 8.0)
         run: |
           ls -la
