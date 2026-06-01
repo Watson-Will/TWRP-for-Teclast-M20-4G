@@ -49,17 +49,24 @@ jobs:
           DEVICE_PATH="device/teclast/m20_mt6797"
           mkdir -p $DEVICE_PATH/recovery/root/etc
           
+          # 【核心修复】从项目根目录复制 zImage 到设备树
+          if [ -f "zImage" ]; then
+            cp zImage $DEVICE_PATH/zImage
+            echo "✅ zImage 已复制到设备树目录"
+          else
+            echo "❌ 错误：项目根目录未找到 zImage！"
+            exit 1
+          fi
+
           echo "🌳 正在生成 TWRP 9.0 设备树配置..."
 
-          # 1. 生成 AndroidProducts.mk
+          # 1. AndroidProducts.mk
           cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
           PRODUCT_MAKEFILES := \
               $(LOCAL_DIR)/twrp_m20_mt6797.mk
           EOF
 
-          # 2. 生成 twrp_m20_mt6797.mk
-          # 【核心修复】TWRP 9.0 无需继承任何 TWRP 专属 mk 文件
-          # 仅保留 AOSP 基础继承，TWRP 功能由 lunch twrp_xxx-eng 自动注入
+          # 2. twrp_m20_mt6797.mk (TWRP 9.0 无需继承 TWRP 专属 mk)
           cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
           $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
@@ -80,10 +87,12 @@ jobs:
               update_engine_sideload
           EOF
 
-          # 3. 生成 BoardConfig.mk
-          # 【屏幕适配】已针对 2560x1600 分辨率调整为 xxhdpi 横屏主题
+          # 3. BoardConfig.mk (已添加预编译内核声明 + landscape_hdpi 主题)
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
+
+          # 【关键】指定预编译内核路径，解决 ninja missing kernel 错误
+          TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/zImage
 
           TARGET_ARCH := arm64
           TARGET_ARCH_VARIANT := armv8-a
@@ -117,10 +126,12 @@ jobs:
           BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
           BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
 
+          # TWRP 9.0 仅支持 hdpi/mdpi，2K平板横屏选用 landscape_hdpi
           TW_THEME := landscape_hdpi
-          TARGET_SCREEN_HEIGHT := 1600
           TARGET_SCREEN_WIDTH := 2560
+          TARGET_SCREEN_HEIGHT := 1600
           TW_FRAMERATE := 60
+          
           RECOVERY_SDCARD_ON_DATA := true
           TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
           TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
@@ -135,7 +146,7 @@ jobs:
           TW_SCREEN_BLANK_ON_BOOT := true
           EOF
 
-          # 4. 生成 recovery.fstab
+          # 4. recovery.fstab
           cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
           /boot           emmc    /dev/block/by-name/boot           flags=backup=1
           /recovery       emmc    /dev/block/by-name/recovery       flags=backup=1
