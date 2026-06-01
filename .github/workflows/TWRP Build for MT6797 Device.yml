@@ -8,28 +8,26 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@v10
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          overprovision-lvm: 'true'
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Free Disk Space & Install Dependencies
+      - name: Install Dependencies
         run: |
-          echo "🧹 正在清理 GitHub Runner 预留空间..."
-          # 删除 Android SDK、.NET、Haskell 等无关大型目录，可释放约 8-10GB
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force || true
-          
-          df -h /
-          
-          echo "📦 安装必要依赖..."
           sudo apt-get update -qq
           sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils zip
 
-      - name: Install legacy libtinfo5 for Android 9 Clang
+      - name: Install legacy libtinfo5
         run: |
-          echo "🔧 正在安装 libtinfo.so.5..."
           if ! sudo apt-get install -y libtinfo5; then
             wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
             sudo dpkg -i libtinfo5_6.2-0ubuntu2_amd64.deb
@@ -39,16 +37,91 @@ jobs:
 
       - name: Generate Device Tree for MT6797
         run: |
-          # ... 保持原有设备树生成逻辑不变 ...
           DEVICE_PATH="device/teclast/m20_mt6797"
           mkdir -p $DEVICE_PATH/recovery/root/etc
+          
           if [ -f "boot.img" ]; then
             cp boot.img $DEVICE_PATH/prebuilt_boot.img
             echo "✅ 原厂 boot.img 已复制为预编译内核"
           else
             echo "❌ 错误：项目根目录未找到 boot.img！"; exit 1
           fi
-          # ... AndroidProducts.mk / twrp_m20_mt6797.mk / BoardConfig.mk / recovery.fstab 保持不变 ...
+
+          cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
+          PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
+          EOF
+
+          cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
+          $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
+          $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
+          PRODUCT_DEVICE := m20_mt6797
+          PRODUCT_NAME := twrp_m20_mt6797
+          PRODUCT_BRAND := Teclast
+          PRODUCT_MODEL := Teclast M20 4G
+          PRODUCT_MANUFACTURER := Teclast
+          ALLOW_MISSING_DEPENDENCIES := true
+          EOF
+
+          cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
+          DEVICE_PATH := device/teclast/m20_mt6797
+          TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
+
+          TARGET_ARCH := arm64
+          TARGET_ARCH_VARIANT := armv8-a
+          TARGET_CPU_ABI := arm64-v8a
+          TARGET_CPU_VARIANT_RUNTIME := cortex-a72
+          TARGET_2ND_ARCH := arm
+          TARGET_2ND_ARCH_VARIANT := armv8-a
+          TARGET_2ND_CPU_ABI := armeabi-v7a
+          TARGET_2ND_CPU_VARIANT_RUNTIME := cortex-a53
+
+          TARGET_BOARD_PLATFORM := mt6797
+          TARGET_BOOTLOADER_BOARD_NAME := mt6797
+          TARGET_NO_BOOTLOADER := true
+
+          BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2
+          BOARD_KERNEL_BASE := 0x40078000
+          BOARD_KERNEL_PAGESIZE := 2048
+          BOARD_KERNEL_OFFSET := 0x00008000
+          BOARD_RAMDISK_OFFSET := 0x11a88000
+          BOARD_KERNEL_TAGS_OFFSET := 0x07808000
+          BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
+
+          BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
+          BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
+          BOARD_HAS_LARGE_FILESYSTEM := true
+          BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
+          BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
+
+          TW_THEME := landscape_hdpi
+          TARGET_SCREEN_WIDTH := 2560
+          TARGET_SCREEN_HEIGHT := 1600
+          TW_FRAMERATE := 60
+          RECOVERY_SDCARD_ON_DATA := true
+          TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
+          TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
+          TW_MAX_BRIGHTNESS := 255
+          TW_DEFAULT_BRIGHTNESS := 120
+          TW_USE_TOOLBOX := true
+          TW_INCLUDE_NTFS_3G := true
+          TW_INCLUDE_FUSE_EXFAT := true
+          TW_EXCLUDE_SUPERSU := true
+          TW_INCLUDE_CRYPTO := true
+          TW_EXTRA_LANGUAGES := true
+          TW_SCREEN_BLANK_ON_BOOT := true
+          EOF
+
+          cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
+          /boot           emmc    /dev/block/by-name/boot           flags=backup=1
+          /recovery       emmc    /dev/block/by-name/recovery       flags=backup=1
+          /system         ext4    /dev/block/by-name/system         flags=backup=1
+          /vendor         ext4    /dev/block/by-name/vendor         flags=backup=1
+          /data           f2fs    /dev/block/by-name/userdata       flags=backup=1,encryptable=footer
+          /cache          ext4    /dev/block/by-name/cache          flags=backup=1
+          /sdcard         vfat    /dev/block/mmcblk1p1              flags=display="Micro SDcard";storage;wipeingui;removable
+          /usb-otg        auto    /dev/block/sda1                   flags=display="USB-OTG";storage;wipeingui;removable
+          EOF
+
           echo "✅ 设备树生成完成！"
 
       - name: Sync TWRP Source & Build
@@ -64,18 +137,15 @@ jobs:
           echo "🚀 初始化 TWRP 9.0 源码仓库..."
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-9.0 --depth=1
           
-          echo "📦 同步源码（排除不必要的预编译包）..."
-          # 【关键修复】添加 --no-tags 并排除 sdk 以外的超大预编译仓库
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags \
-            --exclude platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
-            --exclude platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
+          echo "📦 同步源码..."
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
           
-          # 同步完成后立即删除不需要的预编译工具链（TWRP 使用自带 clang）
-          echo "🧹 清理多余预编译文件以腾出编译空间..."
+          echo "🧹 清理无用预编译文件以释放编译空间..."
           rm -rf prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
           rm -rf prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
           rm -rf prebuilts/jdk/jdk8
           rm -rf prebuilts/sdk/current/androidx-stubs-src.jar
+          rm -rf out/soong/.intermediates/frameworks/base/api
           
           df -h /
           
