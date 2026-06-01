@@ -166,26 +166,23 @@ jobs:
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
 
-          # 2. 进入构建目录并初始化极简 TWRP 仓库
+          # 2. 进入构建目录并初始化 AOSP TWRP 仓库 (包含完整依赖)
           mkdir -p twrp_build
           cd twrp_build
           
-          echo "🚀 初始化 TWRP 极简源码仓库 (twrp-9.0 分支)..."
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-9.0 --depth=1
+          echo "🚀 初始化 TWRP AOSP 源码仓库 (包含完整基础依赖)..."
+          # 换回 aosp 清单，但指定存在的 twrp-12.1 分支
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1
           
-          echo "📦 同步基础源码..."
+          echo "📦 同步源码..."
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
 
-          # 3. 【核心修复】手动拉取缺失的 skia 图形渲染依赖库
-          echo "🔧 修复缺失的 skia 依赖..."
-          # 创建目录并拉取 skia 仓库（使用与 TWRP 9.0 兼容的 android-9.0.0_r3 分支）
-          mkdir -p external/skia
-          cd external/skia
-          git init
-          git remote add origin https://android.googlesource.com/platform/external/skia
-          git fetch --depth 1 origin android-9.0.0_r3
-          git checkout FETCH_HEAD
-          cd ../..
+          # 3. 【关键排雷】手动删除或清空会导致编译失败的 cts/vts 目录
+          echo "🧨 排除 CTS/VTS 测试模块（防止 undefined module 报错）..."
+          # 如果目录存在，则将其内容清空或移除，欺骗编译系统这些模块不存在
+          if [ -d "cts" ]; then rm -rf cts/*; fi
+          if [ -d "hardware/interfaces" ]; then find hardware/interfaces -name "*vts*" -exec rm -rf {} + 2>/dev/null || true; fi
+          if [ -d "test" ]; then rm -rf test/*; fi
 
           # 4. 部署设备树到源码目录
           echo "🔧 部署设备树到源码目录..."
