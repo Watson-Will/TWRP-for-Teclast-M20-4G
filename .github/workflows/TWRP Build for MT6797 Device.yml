@@ -124,6 +124,8 @@ jobs:
           BOARD_HAS_LARGE_FILESYSTEM := true
           BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
           BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
+
+          # TWRP 基础配置
           TW_THEME := landscape_hdpi
           TARGET_SCREEN_WIDTH := 2560
           TARGET_SCREEN_HEIGHT := 1600
@@ -134,12 +136,18 @@ jobs:
           TW_MAX_BRIGHTNESS := 255
           TW_DEFAULT_BRIGHTNESS := 120
           TW_USE_TOOLBOX := true
-          TW_INCLUDE_NTFS_3G := true
-          TW_INCLUDE_FUSE_EXFAT := true
-          TW_EXCLUDE_SUPERSU := true
           TW_INCLUDE_CRYPTO := true
-          TW_EXTRA_LANGUAGES := true
           TW_SCREEN_BLANK_ON_BOOT := true
+
+          # 🔽 TWRP 瘦身配置（解决镜像过大问题）🔽
+          LZMA_RAMDISK_TARGETS := recovery
+          TW_EXCLUDE_NTFS_3G := true
+          TW_EXCLUDE_FUSE_EXFAT := true
+          TW_EXCLUDE_SUPERSU := true
+          TW_EXCLUDE_TWRPAPP := true
+          TW_NO_EXFAT_FUSE := true
+          TW_EXTRA_LANGUAGES := false
+          TW_DEFAULT_LANGUAGE := zh_CN
           EOF
           cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
           /boot           emmc    /dev/block/by-name/boot           flags=backup=1
