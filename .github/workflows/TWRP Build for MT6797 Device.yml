@@ -172,7 +172,7 @@ jobs:
           
           echo "🚀 初始化 TWRP AOSP 源码仓库 (强制使用 twrp-12.1 分支)..."
           # 核心修改：根据仓库实际情况，指定存在的 twrp-12.1 分支
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aomp.git -b twrp-12.1 --depth=1
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1
           
           echo "📦 同步源码..."
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
