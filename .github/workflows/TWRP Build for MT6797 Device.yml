@@ -56,17 +56,21 @@ jobs:
               $(LOCAL_DIR)/twrp_m20_mt6797.mk
           EOF
 
-          # 【修复】添加 TWRP 核心产品继承，移除不兼容的 vendor 变量
+          # 【核心修复】将 vendor/twrp/config/common.mk 替换为 bootable/recovery/twrp.mk
+          # 并添加 ALLOW_MISSING_DEPENDENCIES=true 防止 TWRP 9.0 严格依赖检查报错
           cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
           $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
-          $(call inherit-product, vendor/twrp/config/common.mk)
+          $(call inherit-product, bootable/recovery/twrp.mk)
 
           PRODUCT_DEVICE := m20_mt6797
           PRODUCT_NAME := twrp_m20_mt6797
           PRODUCT_BRAND := Teclast
           PRODUCT_MODEL := Teclast M20 4G
           PRODUCT_MANUFACTURER := Teclast
+
+          # TWRP 9.0 必须声明允许缺失依赖，否则大量系统模块会报错
+          ALLOW_MISSING_DEPENDENCIES := true
 
           PRODUCT_PACKAGES += \
               otapreopt_script \
@@ -76,7 +80,6 @@ jobs:
               update_engine_sideload
           EOF
 
-          # 【修复】移除 TARGET_COPY_OUT_VENDOR 和 BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
 
