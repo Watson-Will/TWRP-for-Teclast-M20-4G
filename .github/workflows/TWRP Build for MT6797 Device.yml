@@ -21,28 +21,21 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install twrpdtgen
           
-          # 1. 安装基础工具
           sudo apt-get update
           sudo apt-get install -y cpio gzip zlib1g-dev liblz4-tool unzip
           
-          # 2. 清理旧文件
           rm -f magisk.apk libmagiskboot.so magiskboot
           
-          # 3. 下载 Magisk 的二进制工具
           wget https://github.com/topjohnwu/Magisk/releases/download/v26.1/Magisk-v26.1.apk -O magisk.apk
           
-          # 4. 提取 x86_64 版本的 magiskboot
           unzip magisk.apk 'lib/x86_64/libmagiskboot.so'
           
-          # 5. 重命名并赋予执行权限
           mv lib/x86_64/libmagiskboot.so ./magiskboot
           chmod +x ./magiskboot
           
-          # 6. 执行解包，并强制忽略非零退出码 (GitHub误报)
           echo "🚀 正在解包 boot.img ..."
           ./magiskboot unpack boot.img || true
           
-          # 7. 验证解包结果
           if [ -f "kernel" ] || [ -f "ramdisk.cpio" ]; then
             echo "✅ 恭喜！boot.img 解包成功！"
             ls -la | grep -E "(kernel|ramdisk|dtb)"
@@ -53,22 +46,21 @@ jobs:
 
       - name: Manually Generate Device Tree for MT6797
         run: |
-          # 1. 创建设备树目录 (厂商/设备名)
           DEVICE_PATH="device/teclast/m20_mt6797"
           mkdir -p $DEVICE_PATH
           
           echo "🌳 正在手动生成 TWRP 设备树配置..."
 
-          # 2. 生成 AndroidProducts.mk (产品入口文件)
           cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
           PRODUCT_MAKEFILES := \
               $(LOCAL_DIR)/twrp_m20_mt6797.mk
           EOF
 
-          # 3. 生成 twrp_m20_mt6797.mk (产品编译配置文件)
+          # 【修复】添加 TWRP 核心产品继承，移除不兼容的 vendor 变量
           cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
           $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
+          $(call inherit-product, vendor/twrp/config/common.mk)
 
           PRODUCT_DEVICE := m20_mt6797
           PRODUCT_NAME := twrp_m20_mt6797
@@ -84,11 +76,10 @@ jobs:
               update_engine_sideload
           EOF
 
-          # 4. 生成 BoardConfig.mk (最核心的硬件与分区配置文件)
+          # 【修复】移除 TARGET_COPY_OUT_VENDOR 和 BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
 
-          # 基础架构配置
           TARGET_ARCH := arm64
           TARGET_ARCH_VARIANT := armv8-a
           TARGET_CPU_ABI := arm64-v8a
@@ -103,12 +94,10 @@ jobs:
           TARGET_2ND_CPU_VARIANT := generic
           TARGET_2ND_CPU_VARIANT_RUNTIME := cortex-a53
 
-          # 平台配置 (MT6797 对应 Helio X20/X23/X27)
           TARGET_BOARD_PLATFORM := mt6797
           TARGET_BOOTLOADER_BOARD_NAME := mt6797
           TARGET_NO_BOOTLOADER := true
 
-          # 内核配置
           BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2
           BOARD_KERNEL_BASE := 0x40078000
           BOARD_KERNEL_PAGESIZE := 2048
@@ -117,16 +106,12 @@ jobs:
           BOARD_KERNEL_TAGS_OFFSET := 0x07808000
           BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
 
-          # 分区表配置 (根据 MT6797 常见布局设定，后续可根据实际 fstab 微调)
           BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
-          BOARD_RECOVERYIMAGE_PARTITION_SIZE := 33554432
+          BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
           BOARD_HAS_LARGE_FILESYSTEM := true
           BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
           BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
-          BOARD_VENDORIMAGE_FILE_SYSTEM_TYPE := ext4
-          TARGET_COPY_OUT_VENDOR := vendor
 
-          # TWRP 专属配置
           TW_THEME := portrait_hdpi
           RECOVERY_SDCARD_ON_DATA := true
           TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
@@ -142,7 +127,6 @@ jobs:
           TW_SCREEN_BLANK_ON_BOOT := true
           EOF
 
-          # 5. 生成 recovery.fstab (分区挂载表)
           mkdir -p $DEVICE_PATH/recovery/root/etc
           cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
           /boot           emmc    /dev/block/by-name/boot           flags=backup=1
@@ -174,6 +158,10 @@ jobs:
           echo "📦 同步源码..."
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
 
+          # 【修复】将 clean 移到部署文件之前，避免清理掉预编译内核
+          echo "🧹 清理旧编译缓存..."
+          make clean || true
+
           echo "🔧 部署设备树到源码目录..."
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
@@ -189,26 +177,15 @@ jobs:
           echo "✅ 成功部署内核文件！"
           ls -lh prebuilts/kernel/arm64/zImage
 
-          echo "🔧 强制写入 BOARD_KERNEL_IMAGE_NAME 和 TARGET_PREBUILT_KERNEL..."
-          BOARD_CONFIG="device/teclast/m20_mt6797/BoardConfig.mk"
-          
-          sed -i '/BOARD_KERNEL_IMAGE_NAME/d' $BOARD_CONFIG
-          sed -i '/TARGET_PREBUILT_KERNEL/d' $BOARD_CONFIG
-          sed -i '/BOARD_RECOVERYIMAGE_PARTITION_SIZE/d' $BOARD_CONFIG
-          
-          echo 'BOARD_KERNEL_IMAGE_NAME := zImage' >> $BOARD_CONFIG
-          echo 'TARGET_PREBUILT_KERNEL := prebuilts/kernel/arm64/zImage' >> $BOARD_CONFIG
-          echo 'BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216' >> $BOARD_CONFIG
-
-          echo "🔍 BoardConfig.mk 末尾配置检查："
-          tail -n 5 device/teclast/m20_mt6797/BoardConfig.mk
+          echo "🔧 修正设备树中的依赖名称..."
+          find device/teclast/m20_mt6797 -type f \( -name "*.mk" -o -name "*.bp" \) -exec sed -i 's/skia_deps/libskia/g' {} \;
+          echo "✅ 已成功将设备树中的 skia_deps 替换为 libskia"
 
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
           echo "🏗️  开始编译 TWRP 9.0..."
           lunch twrp_m20_mt6797-eng
-          make clean
           mka recoveryimage -j2
           
       - name: Upload TWRP Recovery Image
