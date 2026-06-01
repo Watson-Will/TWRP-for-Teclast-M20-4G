@@ -181,7 +181,7 @@ jobs:
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          # 4. 【核心优化】使用 AOSP 自带的 unpack_bootimg 提取原厂内核
+          # 4. 【核心优化】使用 mkbootimg_tools 提取原厂内核
           echo "🔍 开始从原厂 boot.img 提取内核 (zImage)..."
           
           # 检查根目录是否提供了原厂 boot.img
@@ -193,19 +193,16 @@ jobs:
           # 复制原厂 boot.img 到构建目录
           cp ../boot.img .
           
-          # 直接使用 AOSP 预编译好的 unpack_bootimg 工具进行解包
-          # 该工具在源码同步后位于 out/host/linux-x86/bin/ 目录下
-          UNPACK_TOOL="out/host/linux-x86/bin/unpack_bootimg"
-          if [ -f "$UNPACK_TOOL" ]; then
-            mkdir -p extracted_boot
-            $UNPACK_TOOL --boot_img boot.img --out extracted_boot
-            echo "✅ 成功使用 unpack_bootimg 解包原厂镜像！"
-          else
-            echo "❌ 致命错误：未找到 AOSP 自带的 unpack_bootimg 工具！"
-            exit 1
-          fi
+          # 下载并准备 mkbootimg_tools 解包工具
+          echo "正在准备 mkbootimg_tools 解包工具..."
+          git clone --depth=1 https://github.com/osm0sis/mkbootimg_tools.git /tmp/mkbootimg_tools
           
-          # 确认提取出的内核文件（unpack_bootimg 提取出的内核通常命名为 kernel）
+          # 使用 mkbootimg_tools 解包原厂 boot.img
+          mkdir -p extracted_boot
+          python3 /tmp/mkbootimg_tools/unpack_bootimg.py --boot_img boot.img --out extracted_boot
+          echo "✅ 成功使用 mkbootimg_tools 解包原厂镜像！"
+          
+          # 确认提取出的内核文件（mkbootimg_tools 提取出的内核通常命名为 kernel）
           if [ -f "extracted_boot/kernel" ]; then
             # 统一命名为 zImage 并移动到标准预编译目录
             mkdir -p prebuilts/kernel/arm64
