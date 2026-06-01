@@ -181,40 +181,67 @@ jobs:
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          # 【核心修复】强制修改 BoardConfig.mk，确保内核配置正确写入
+          # 4. 【核心新增】从原厂 boot.img 中自动提取 zImage
+          echo "🔍 开始从原厂 boot.img 提取内核 (zImage)..."
+          
+          # 检查根目录是否提供了原厂 boot.img
+          if [ ! -f "../boot.img" ]; then
+            echo "❌ 致命错误：在项目根目录未找到 boot.img！请确保原厂 boot.img 已上传。"
+            exit 1
+          fi
+          
+          # 复制原厂 boot.img 到构建目录
+          cp ../boot.img .
+          
+          # 使用 AOSP 自带的 unpack_bootimg 工具进行解包（比第三方工具更稳定）
+          # 如果没有 unpack_bootimg，也可以安装 bootimg-tools，但这里优先使用源码自带的
+          if command -v unpack_bootimg &> /dev/null; then
+            unpack_bootimg --boot_img boot.img --out extracted_boot
+          else
+            # 如果源码环境没带 unpack_bootimg，则手动下载编译 bootimg-tools
+            echo "正在下载并编译 bootimg-tools..."
+            git clone https://github.com/pbatard/bootimg-tools.git /tmp/bootimg-tools
+            cd /tmp/bootimg-tools && make && cd -
+            /tmp/bootimg-tools/unmkbootimg -i boot.img
+            # unmkbootimg 会直接把 kernel 提取到当前目录，并重命名为 kernel
+            mv kernel extracted_boot/zImage 2>/dev/null || mkdir -p extracted_boot && mv kernel extracted_boot/zImage
+          fi
+          
+          # 确认提取出的内核文件
+          if [ -f "extracted_boot/zImage" ] || [ -f "extracted_boot/kernel" ]; then
+            # 统一命名为 zImage 并移动到标准预编译目录
+            mkdir -p prebuilts/kernel/arm64
+            mv extracted_boot/zImage extracted_boot/kernel 2>/dev/null || true
+            mv extracted_boot/kernel prebuilts/kernel/arm64/zImage 2>/dev/null || mv extracted_boot/zImage prebuilts/kernel/arm64/zImage
+            echo "✅ 成功从原厂 boot.img 中提取并部署 zImage！"
+            ls -lh prebuilts/kernel/arm64/zImage
+          else
+            echo "❌ 致命错误：解包 boot.img 失败，未能提取到 zImage 文件！"
+            ls -R extracted_boot
+            exit 1
+          fi
+
+          # 5. 强制修改 BoardConfig.mk，指向提取出的内核
           echo "🔧 强制写入 BOARD_KERNEL_IMAGE_NAME 和 TARGET_PREBUILT_KERNEL..."
           BOARD_CONFIG="device/teclast/m20_mt6797/BoardConfig.mk"
           
-          # 先删除可能存在的旧配置，防止重复或冲突
+          # 删除旧配置防止冲突
           sed -i '/BOARD_KERNEL_IMAGE_NAME/d' $BOARD_CONFIG
           sed -i '/TARGET_PREBUILT_KERNEL/d' $BOARD_CONFIG
           
-          # 强制在文件末尾追加正确的配置
+          # 强制追加新配置
           echo 'BOARD_KERNEL_IMAGE_NAME := zImage' >> $BOARD_CONFIG
           echo 'TARGET_PREBUILT_KERNEL := prebuilts/kernel/arm64/zImage' >> $BOARD_CONFIG
 
-          # 4. 准备内核文件（使用源码自带的 prebuilts 目录，最稳妥）
-          echo "🔧 准备预编译内核文件..."
-          mkdir -p prebuilts/kernel/arm64
-          # 如果你的设备树目录下有 zImage，就复制过来；如果没有，这里会留空，但配置已经写好
-          if [ -f "../device/teclast/m20_mt6797/zImage" ]; then
-            cp ../device/teclast/m20_mt6797/zImage prebuilts/kernel/arm64/
-            echo "✅ 成功复制 zImage 到 prebuilts 目录"
-          else
-            echo "⚠️ 警告：未找到预编译内核文件 zImage，请确保你的设备树目录下有正确的内核文件！"
-          fi
-          
-          # 打印目录结构和配置确认
-          echo "🔍 设备树文件检查："
-          ls -R device/teclast/m20_mt6797/
+          # 打印配置确认
           echo "🔍 BoardConfig.mk 末尾配置检查："
           tail -n 5 device/teclast/m20_mt6797/BoardConfig.mk
 
-          # 5. 准备编译环境
+          # 6. 准备编译环境
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          # 6. 开始编译 TWRP
+          # 7. 开始编译 TWRP
           echo "🏗️  开始编译 TWRP..."
           lunch twrp_m20_mt6797-eng
           SOONG_ALLOW_MISSING_DEPENDENCIES=true mka recoveryimage -j2
