@@ -160,71 +160,52 @@ jobs:
 
       - name: Sync TWRP Source & Build
         run: |
-          # 1. 安装 repo 工具
           mkdir -p ~/.bin
           PATH="${HOME}/.bin:${PATH}"
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
 
-          # 2. 进入构建目录并初始化 TWRP 9.0 源码仓库
           mkdir -p twrp_build
           cd twrp_build
           
           echo "🚀 初始化 TWRP 9.0 (Android 9.0) 源码仓库..."
-          # 【核心修改】将分支从 twrp-12.1 降级为 twrp-9.0
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-9.0 --depth=1
           
           echo "📦 同步源码..."
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags<websource>source_group_web_2</websource>
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
 
-          # 3. 部署设备树到源码目录
           echo "🔧 部署设备树到源码目录..."
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          # 4. 部署本地提取好的 zImage
           echo "📦 部署内核文件 zImage..."
-          
-          # 检查根目录是否提供了 zImage
           if [ ! -f "../zImage" ]; then
             echo "❌ 致命错误：在项目根目录未找到 zImage！请先在本地提取并上传 zImage 文件。"
             exit 1
           fi
           
-          # 创建预编译内核目录并复制文件
           mkdir -p prebuilts/kernel/arm64
           cp ../zImage prebuilts/kernel/arm64/
           echo "✅ 成功部署内核文件！"
           ls -lh prebuilts/kernel/arm64/zImage
 
-          # 5. 强制修改 BoardConfig.mk，适配 TWRP 9.0 编译环境
           echo "🔧 强制写入 BOARD_KERNEL_IMAGE_NAME 和 TARGET_PREBUILT_KERNEL..."
           BOARD_CONFIG="device/teclast/m20_mt6797/BoardConfig.mk"
           
-          # 删除旧配置防止冲突（去掉了 Android 12 专属的压缩参数）
           sed -i '/BOARD_KERNEL_IMAGE_NAME/d' $BOARD_CONFIG
           sed -i '/TARGET_PREBUILT_KERNEL/d' $BOARD_CONFIG
           sed -i '/BOARD_RECOVERYIMAGE_PARTITION_SIZE/d' $BOARD_CONFIG
-          sed -i '/BOARD_RAMDISK_USE_LZ4/d' $BOARD_CONFIG
-          sed -i '/LZMA_RAMDISK_TARGETS/d' $BOARD_CONFIG
-          sed -i '/TW_EXCLUDE_TWRPAPP/d' $BOARD_CONFIG
-          sed -i '/TW_EXCLUDE_APEX/d' $BOARD_CONFIG
           
-          # 强制追加新配置
           echo 'BOARD_KERNEL_IMAGE_NAME := zImage' >> $BOARD_CONFIG
           echo 'TARGET_PREBUILT_KERNEL := prebuilts/kernel/arm64/zImage' >> $BOARD_CONFIG
-          # 设定 16MB 的安全分区限制（16 * 1024 * 1024 = 16777216 字节）
           echo 'BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216' >> $BOARD_CONFIG
 
-          # 打印配置确认
           echo "🔍 BoardConfig.mk 末尾配置检查："
           tail -n 5 device/teclast/m20_mt6797/BoardConfig.mk
 
-          # 6. 准备编译环境
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          # 7. 开始编译 TWRP 9.0
           echo "🏗️  开始编译 TWRP 9.0..."
           lunch twrp_m20_mt6797-eng
           make clean
