@@ -181,8 +181,8 @@ jobs:
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          # 4. 【核心优化】使用 mkbootimg_tools 提取原厂内核
-          echo "🔍 开始从原厂 boot.img 提取内核 (zImage)..."
+          # 4. 【核心新增】使用 magiskboot 从原厂 boot.img 中提取 zImage
+          echo "🔍 开始使用 magiskboot 从原厂 boot.img 提取内核..."
           
           # 检查根目录是否提供了原厂 boot.img
           if [ ! -f "../boot.img" ]; then
@@ -193,25 +193,27 @@ jobs:
           # 复制原厂 boot.img 到构建目录
           cp ../boot.img .
           
-          # 下载并准备 mkbootimg_tools 解包工具
-          echo "正在准备 mkbootimg_tools 解包工具..."
-          git clone --depth=1 https://github.com/osm0sis/mkbootimg_tools.git /tmp/mkbootimg_tools
+          # 下载预编译好的 magiskboot 工具 (Linux x86_64 版本)
+          echo "正在下载 magiskboot 工具..."
+          # 使用 svoboda18 提供的预编译版本，兼容性好
+          wget -q https://github.com/svoboda18/magiskboot/releases/download/26.1/magiskboot-linux-x86_64 -O magiskboot
+          chmod +x magiskboot
+          echo "✅ magiskboot 工具准备就绪！"
           
-          # 使用 mkbootimg_tools 解包原厂 boot.img
-          mkdir -p extracted_boot
-          python3 /tmp/mkbootimg_tools/unpack_bootimg.py --boot_img boot.img --out extracted_boot
-          echo "✅ 成功使用 mkbootimg_tools 解包原厂镜像！"
+          # 使用 magiskboot 解包原厂 boot.img
+          # 解包后会在当前目录生成 kernel, ramdisk.cpio 等文件
+          ./magiskboot unpack boot.img
           
-          # 确认提取出的内核文件（mkbootimg_tools 提取出的内核通常命名为 kernel）
-          if [ -f "extracted_boot/kernel" ]; then
+          # 确认提取出的内核文件（magiskboot 提取出的内核默认命名为 kernel）
+          if [ -f "kernel" ]; then
             # 统一命名为 zImage 并移动到标准预编译目录
             mkdir -p prebuilts/kernel/arm64
-            mv extracted_boot/kernel prebuilts/kernel/arm64/zImage
+            mv kernel prebuilts/kernel/arm64/zImage
             echo "✅ 成功从原厂 boot.img 中提取并部署 zImage！"
             ls -lh prebuilts/kernel/arm64/zImage
           else
-            echo "❌ 致命错误：解包 boot.img 失败，未能提取到 kernel 文件！"
-            ls -R extracted_boot
+            echo "❌ 致命错误：使用 magiskboot 解包 boot.img 失败，未能提取到 kernel 文件！"
+            ls -la
             exit 1
           fi
 
