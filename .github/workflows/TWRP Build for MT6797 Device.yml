@@ -181,7 +181,7 @@ jobs:
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          # 4. 【终极稳定方案】直接部署本地提取好的 zImage
+          # 4. 部署本地提取好的 zImage
           echo "📦 部署内核文件 zImage..."
           
           # 检查根目录是否提供了 zImage
@@ -196,27 +196,42 @@ jobs:
           echo "✅ 成功部署内核文件！"
           ls -lh prebuilts/kernel/arm64/zImage
 
-          # 5. 强制修改 BoardConfig.mk，指向上传的内核
-          echo "🔧 强制写入 BOARD_KERNEL_IMAGE_NAME 和 TARGET_PREBUILT_KERNEL..."
+          # 5. 强制修改 BoardConfig.mk，开启极致压缩与功能精简
+          echo "🔧 强制写入 BOARD_KERNEL_IMAGE_NAME、TARGET_PREBUILT_KERNEL 并开启压缩..."
           BOARD_CONFIG="device/teclast/m20_mt6797/BoardConfig.mk"
           
           # 删除旧配置防止冲突
           sed -i '/BOARD_KERNEL_IMAGE_NAME/d' $BOARD_CONFIG
           sed -i '/TARGET_PREBUILT_KERNEL/d' $BOARD_CONFIG
+          sed -i '/BOARD_RECOVERYIMAGE_PARTITION_SIZE/d' $BOARD_CONFIG
+          sed -i '/BOARD_RAMDISK_USE_LZ4/d' $BOARD_CONFIG
+          sed -i '/LZMA_RAMDISK_TARGETS/d' $BOARD_CONFIG
+          sed -i '/TW_EXCLUDE_TWRPAPP/d' $BOARD_CONFIG
+          sed -i '/TW_EXCLUDE_APEX/d' $BOARD_CONFIG
           
           # 强制追加新配置
           echo 'BOARD_KERNEL_IMAGE_NAME := zImage' >> $BOARD_CONFIG
           echo 'TARGET_PREBUILT_KERNEL := prebuilts/kernel/arm64/zImage' >> $BOARD_CONFIG
+          # 【核心新增】开启极致压缩，尝试减小体积
+          echo 'BOARD_RAMDISK_USE_LZ4 := true' >> $BOARD_CONFIG
+          echo 'LZMA_RAMDISK_TARGETS := recovery' >> $BOARD_CONFIG
+          # 排除一些非核心功能以节省空间
+          echo 'TW_EXCLUDE_TWRPAPP := true' >> $BOARD_CONFIG
+          echo 'TW_EXCLUDE_APEX := true' >> $BOARD_CONFIG
 
           # 打印配置确认
           echo "🔍 BoardConfig.mk 末尾配置检查："
-          tail -n 5 device/teclast/m20_mt6797/BoardConfig.mk
+          tail -n 8 device/teclast/m20_mt6797/BoardConfig.mk
 
           # 6. 准备编译环境
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          # 7. 开始编译 TWRP
+          # 7. 【核心新增】清理旧缓存，确保压缩参数生效
+          echo "🧹 清理旧的编译缓存 (make clobber)，以确保压缩参数生效..."
+          make clobber
+          
+          # 8. 开始编译 TWRP
           echo "🏗️  开始编译 TWRP..."
           lunch twrp_m20_mt6797-eng
           SOONG_ALLOW_MISSING_DEPENDENCIES=true mka recoveryimage -j2
