@@ -39,14 +39,45 @@ jobs:
           python --version
           python3 --version
 
-      - name: Install legacy libtinfo5
+      - name: Install Legacy ncurses & tinfo Libraries
         run: |
-          if ! sudo apt-get install -y libtinfo5; then
+          # 尝试直接从官方源安装
+          if sudo apt-get install -y libncurses5 libtinfo5; then
+            echo "✅ 从官方源安装 libncurses5/libtinfo5 成功"
+          else
+            echo "⚠️ 官方源不可用，手动下载安装..."
             wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
-            sudo dpkg -i libtinfo5_6.2-0ubuntu2_amd64.deb
-            rm -f libtinfo5_6.2-0ubuntu2_amd64.deb
+            wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.2-0ubuntu2_amd64.deb
+            sudo dpkg -i libtinfo5_6.2-0ubuntu2_amd64.deb libncurses5_6.2-0ubuntu2_amd64.deb
+            rm -f libtinfo5_6.2-0ubuntu2_amd64.deb libncurses5_6.2-0ubuntu2_amd64.deb
           fi
-          ls /lib/x86_64-linux-gnu/libtinfo.so.5 || ls /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || { echo "❌ libtinfo5 安装失败"; exit 1; }
+          
+          # 验证关键库文件存在
+          for lib in libncurses.so.5 libtinfo.so.5; do
+            found=0
+            for dir in /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu /lib64; do
+              if [ -f "$dir/$lib" ]; then
+                echo "✅ 找到 $dir/$lib"
+                found=1
+                break
+              fi
+            done
+            if [ $found -eq 0 ]; then
+              echo "❌ 未找到 $lib，构建将失败！"
+              exit 1
+            fi
+          done
+          
+          # 部分预编译工具可能硬编码查找 libncurses.so.5 而非 .so.6
+          # 创建兼容性符号链接（如果不存在）
+          for dir in /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu; do
+            if [ -f "$dir/libncurses.so.5" ]; then
+              continue
+            elif [ -f "$dir/libncurses.so.6" ]; then
+              sudo ln -sf "$dir/libncurses.so.6" "$dir/libncurses.so.5"
+              echo "🔗 创建兼容链接: $dir/libncurses.so.5 -> libncurses.so.6"
+            fi
+          done
 
       - name: Generate Device Tree for MT6797
         run: |
