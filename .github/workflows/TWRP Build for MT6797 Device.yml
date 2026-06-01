@@ -181,9 +181,17 @@ jobs:
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          # 【核心修复】自动在 BoardConfig.mk 中追加内核镜像名称定义
-          echo "🔧 修复 BOARD_KERNEL_IMAGE_NAME 缺失问题..."
-          echo 'BOARD_KERNEL_IMAGE_NAME := zImage' >> device/teclast/m20_mt6797/BoardConfig.mk
+          # 【核心修复】确保设备树目录下有内核文件，并在 BoardConfig.mk 中正确配置
+          echo "🔧 修复内核文件缺失问题..."
+          # 假设你的内核文件叫 zImage，并且在你本地的设备树目录下
+          # 如果没有，你需要先准备好一个预编译的内核文件
+          if [ -f "../device/teclast/m20_mt6797/zImage" ]; then
+            cp ../device/teclast/m20_mt6797/zImage device/teclast/m20_mt6797/
+            echo 'TARGET_PREBUILT_KERNEL := device/teclast/m20_mt6797/zImage' >> device/teclast/m20_mt6797/BoardConfig.mk
+            echo 'BOARD_KERNEL_IMAGE_NAME := zImage' >> device/teclast/m20_mt6797/BoardConfig.mk
+          else
+            echo "警告：未找到预编译内核文件 zImage，请确保你的设备树目录下有正确的内核文件！"
+          fi
           
           # 打印目录结构确认
           echo "🔍 设备树文件检查："
