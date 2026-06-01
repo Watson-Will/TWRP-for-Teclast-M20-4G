@@ -181,43 +181,22 @@ jobs:
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          # 4. 【核心新增】使用 magiskboot 从原厂 boot.img 中提取 zImage
-          echo "🔍 开始使用 magiskboot 从原厂 boot.img 提取内核..."
+          # 4. 【终极稳定方案】直接部署本地提取好的 zImage
+          echo "📦 部署内核文件 zImage..."
           
-          # 检查根目录是否提供了原厂 boot.img
-          if [ ! -f "../boot.img" ]; then
-            echo "❌ 致命错误：在项目根目录未找到 boot.img！请确保原厂 boot.img 已上传。"
+          # 检查根目录是否提供了 zImage
+          if [ ! -f "../zImage" ]; then
+            echo "❌ 致命错误：在项目根目录未找到 zImage！请先在本地提取并上传 zImage 文件。"
             exit 1
           fi
           
-          # 复制原厂 boot.img 到构建目录
-          cp ../boot.img .
-          
-          # 下载预编译好的 magiskboot 工具 (Linux x86_64 版本)
-          echo "正在下载 magiskboot 工具..."
-          # 使用 svoboda18 提供的预编译版本，兼容性好
-          wget -q https://github.com/svoboda18/magiskboot/releases/download/26.1/magiskboot-linux-x86_64 -O magiskboot
-          chmod +x magiskboot
-          echo "✅ magiskboot 工具准备就绪！"
-          
-          # 使用 magiskboot 解包原厂 boot.img
-          # 解包后会在当前目录生成 kernel, ramdisk.cpio 等文件
-          ./magiskboot unpack boot.img
-          
-          # 确认提取出的内核文件（magiskboot 提取出的内核默认命名为 kernel）
-          if [ -f "kernel" ]; then
-            # 统一命名为 zImage 并移动到标准预编译目录
-            mkdir -p prebuilts/kernel/arm64
-            mv kernel prebuilts/kernel/arm64/zImage
-            echo "✅ 成功从原厂 boot.img 中提取并部署 zImage！"
-            ls -lh prebuilts/kernel/arm64/zImage
-          else
-            echo "❌ 致命错误：使用 magiskboot 解包 boot.img 失败，未能提取到 kernel 文件！"
-            ls -la
-            exit 1
-          fi
+          # 创建预编译内核目录并复制文件
+          mkdir -p prebuilts/kernel/arm64
+          cp ../zImage prebuilts/kernel/arm64/
+          echo "✅ 成功部署内核文件！"
+          ls -lh prebuilts/kernel/arm64/zImage
 
-          # 5. 强制修改 BoardConfig.mk，指向提取出的内核
+          # 5. 强制修改 BoardConfig.mk，指向上传的内核
           echo "🔧 强制写入 BOARD_KERNEL_IMAGE_NAME 和 TARGET_PREBUILT_KERNEL..."
           BOARD_CONFIG="device/teclast/m20_mt6797/BoardConfig.mk"
           
