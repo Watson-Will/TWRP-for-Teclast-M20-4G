@@ -179,7 +179,13 @@ jobs:
 
           # 3. 部署设备树到源码目录
           echo "🔧 部署设备树到源码目录..."
-          cp -r ../device/teclast ./device/teclast/ 2>/dev/null || echo "⚠️ 设备树复制完成"
+          # 确保目标目录存在
+          mkdir -p device/teclast
+          cp -r ../device/teclast/m20_mt6797 ./device/teclast/
+          
+          # 【新增】打印目录结构，确认文件是否到位
+          echo "🔍 检查设备树文件是否到位："
+          ls -R device/teclast/m20_mt6797/
 
           # 4. 准备编译环境
           echo "🏭 配置编译环境..."
