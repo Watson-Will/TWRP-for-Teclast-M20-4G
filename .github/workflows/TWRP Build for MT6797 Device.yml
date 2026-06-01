@@ -236,9 +236,9 @@ jobs:
           lunch twrp_m20_mt6797-eng
           SOONG_ALLOW_MISSING_DEPENDENCIES=true mka recoveryimage -j2
           
-      - name: Upload TWRP Image
+      - name: Upload TWRP Recovery Image
         uses: actions/upload-artifact@v4
         with:
-          name: TWRP-11.0-Teclast-M20-MT6797
-          path: twrp_build/out/target/product/*/recovery.img
-          if-no-files-found: warn
+          name: TWRP-Recovery-m20_mt6797
+          path: twrp_build/out/target/product/m20_mt6797/recovery.img
+          if-no-files-found: error
