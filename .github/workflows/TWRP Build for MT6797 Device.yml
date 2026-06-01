@@ -13,60 +13,48 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils
+          sudo apt-get update -qq
+          sudo apt-get install -y git wget curl unzip python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils zip
 
-      - name: Setup & Unpack with Magiskboot
+      - name: Install legacy libtinfo5 for Android 9 Clang
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install twrpdtgen
+          echo "🔧 正在安装 libtinfo.so.5 以兼容 TWRP 9.0 预编译工具链..."
+          if ! sudo apt-get install -y libtinfo5; then
+            echo "⚠️ 默认源未找到 libtinfo5，从 Ubuntu 20.04 存档手动下载安装..."
+            wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
+            sudo dpkg -i libtinfo5_6.2-0ubuntu2_amd64.deb
+            rm -f libtinfo5_6.2-0ubuntu2_amd64.deb
+          fi
           
-          sudo apt-get update
-          sudo apt-get install -y cpio gzip zlib1g-dev liblz4-tool unzip
-          
-          rm -f magisk.apk libmagiskboot.so magiskboot
-          
-          wget https://github.com/topjohnwu/Magisk/releases/download/v26.1/Magisk-v26.1.apk -O magisk.apk
-          
-          unzip magisk.apk 'lib/x86_64/libmagiskboot.so'
-          
-          mv lib/x86_64/libmagiskboot.so ./magiskboot
-          chmod +x ./magiskboot
-          
-          echo "🚀 正在解包 boot.img ..."
-          ./magiskboot unpack boot.img || true
-          
-          if [ -f "kernel" ] || [ -f "ramdisk.cpio" ]; then
-            echo "✅ 恭喜！boot.img 解包成功！"
-            ls -la | grep -E "(kernel|ramdisk|dtb)"
+          if [ -f /lib/x86_64-linux-gnu/libtinfo.so.5 ] || [ -f /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ]; then
+            echo "✅ libtinfo.so.5 安装成功"
           else
-            echo "❌ 解包失败，请检查 boot.img 是否损坏"
+            echo "❌ libtinfo.so.5 安装失败！"
             exit 1
           fi
 
-      - name: Manually Generate Device Tree for MT6797
+      - name: Generate Device Tree for MT6797
         run: |
           DEVICE_PATH="device/teclast/m20_mt6797"
           mkdir -p $DEVICE_PATH/recovery/root/etc
           
-          # 【核心修复】从项目根目录复制 zImage 到设备树
-          if [ -f "zImage" ]; then
-            cp zImage $DEVICE_PATH/zImage
-            echo "✅ zImage 已复制到设备树目录"
+          # 【核心】直接使用原厂 boot.img 作为预编译内核（自动包含 kernel+dtb+header）
+          if [ -f "boot.img" ]; then
+            cp boot.img $DEVICE_PATH/prebuilt_boot.img
+            echo "✅ 原厂 boot.img 已复制为预编译内核"
           else
-            echo "❌ 错误：项目根目录未找到 zImage！"
+            echo "❌ 错误：项目根目录未找到 boot.img！"
             exit 1
           fi
 
           echo "🌳 正在生成 TWRP 9.0 设备树配置..."
 
-          # 1. AndroidProducts.mk
+          # AndroidProducts.mk
           cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
-          PRODUCT_MAKEFILES := \
-              $(LOCAL_DIR)/twrp_m20_mt6797.mk
+          PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
           EOF
 
-          # 2. twrp_m20_mt6797.mk (TWRP 9.0 无需继承 TWRP 专属 mk)
+          # twrp_m20_mt6797.mk
           cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
           $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
@@ -78,34 +66,23 @@ jobs:
           PRODUCT_MANUFACTURER := Teclast
 
           ALLOW_MISSING_DEPENDENCIES := true
-
-          PRODUCT_PACKAGES += \
-              otapreopt_script \
-              cppreopts.sh \
-              update_engine \
-              update_verifier \
-              update_engine_sideload
           EOF
 
-          # 3. BoardConfig.mk (已添加预编译内核声明 + landscape_hdpi 主题)
+          # BoardConfig.mk
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
 
-          # 【关键】指定预编译内核路径，解决 ninja missing kernel 错误
-          TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/zImage
+          # 【关键】直接指向完整 boot.img，无需手动合并 kernel+dtb
+          TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
 
           TARGET_ARCH := arm64
           TARGET_ARCH_VARIANT := armv8-a
           TARGET_CPU_ABI := arm64-v8a
-          TARGET_CPU_ABI2 := 
-          TARGET_CPU_VARIANT := generic
           TARGET_CPU_VARIANT_RUNTIME := cortex-a72
 
           TARGET_2ND_ARCH := arm
           TARGET_2ND_ARCH_VARIANT := armv8-a
           TARGET_2ND_CPU_ABI := armeabi-v7a
-          TARGET_2ND_CPU_ABI2 := armeabi
-          TARGET_2ND_CPU_VARIANT := generic
           TARGET_2ND_CPU_VARIANT_RUNTIME := cortex-a53
 
           TARGET_BOARD_PLATFORM := mt6797
@@ -118,7 +95,9 @@ jobs:
           BOARD_KERNEL_OFFSET := 0x00008000
           BOARD_RAMDISK_OFFSET := 0x11a88000
           BOARD_KERNEL_TAGS_OFFSET := 0x07808000
-          BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
+          BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) \
+                                  --ramdisk_offset $(BOARD_RAMDISK_OFFSET) \
+                                  --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
 
           BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
           BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
@@ -126,7 +105,6 @@ jobs:
           BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
           BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
 
-          # TWRP 9.0 仅支持 hdpi/mdpi，2K平板横屏选用 landscape_hdpi
           TW_THEME := landscape_hdpi
           TARGET_SCREEN_WIDTH := 2560
           TARGET_SCREEN_HEIGHT := 1600
@@ -146,7 +124,7 @@ jobs:
           TW_SCREEN_BLANK_ON_BOOT := true
           EOF
 
-          # 4. recovery.fstab
+          # recovery.fstab
           cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
           /boot           emmc    /dev/block/by-name/boot           flags=backup=1
           /recovery       emmc    /dev/block/by-name/recovery       flags=backup=1
@@ -158,29 +136,9 @@ jobs:
           /usb-otg        auto    /dev/block/sda1                   flags=display="USB-OTG";storage;wipeingui;removable
           EOF
 
-          echo "✅ 设备树生成完成！文件列表："
+          echo "✅ 设备树生成完成！"
           find $DEVICE_PATH -type f
 
-      - name: Install legacy libtinfo5 for Android 9 Clang
-        run: |
-          echo "🔧 正在安装 libtinfo.so.5 以兼容 TWRP 9.0 预编译工具链..."
-          sudo apt-get update -qq
-          # Ubuntu 22.04+ 默认源可能不含 libtinfo5，优先尝试直接安装
-          if ! sudo apt-get install -y libtinfo5; then
-            echo "⚠️ 默认源未找到 libtinfo5，从 Ubuntu 20.04 存档手动下载安装..."
-            wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
-            sudo dpkg -i libtinfo5_6.2-0ubuntu2_amd64.deb
-            rm -f libtinfo5_6.2-0ubuntu2_amd64.deb
-          fi
-          
-          # 验证库文件是否就位
-          if [ -f /lib/x86_64-linux-gnu/libtinfo.so.5 ] || [ -f /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ]; then
-            echo "✅ libtinfo.so.5 安装成功"
-          else
-            echo "❌ libtinfo.so.5 安装失败！"
-            exit 1
-          fi
-          
       - name: Sync TWRP Source & Build
         run: |
           mkdir -p ~/.bin
@@ -195,37 +153,19 @@ jobs:
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-9.0 --depth=1
           
           echo "📦 同步源码..."
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
-
-          # 【修复】将 clean 移到部署文件之前，避免清理掉预编译内核
-          echo "🧹 清理旧编译缓存..."
-          make clean || true
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
           echo "🔧 部署设备树到源码目录..."
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
-          echo "📦 部署内核文件 zImage..."
-          if [ ! -f "../zImage" ]; then
-            echo "❌ 致命错误：在项目根目录未找到 zImage！请先在本地提取并上传 zImage 文件。"
-            exit 1
-          fi
-          
-          mkdir -p prebuilts/kernel/arm64
-          cp ../zImage prebuilts/kernel/arm64/
-          echo "✅ 成功部署内核文件！"
-          ls -lh prebuilts/kernel/arm64/zImage
-
-          echo "🔧 修正设备树中的依赖名称..."
-          find device/teclast/m20_mt6797 -type f \( -name "*.mk" -o -name "*.bp" \) -exec sed -i 's/skia_deps/libskia/g' {} \;
-          echo "✅ 已成功将设备树中的 skia_deps 替换为 libskia"
-
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          echo "🏗️  开始编译 TWRP 9.0..."
+          echo "🏗️ 开始编译 TWRP 9.0..."
           lunch twrp_m20_mt6797-eng
-          mka recoveryimage -j2
+          make clean
+          mka recoveryimage -j$(nproc)
           
       - name: Upload TWRP Recovery Image
         uses: actions/upload-artifact@v4
