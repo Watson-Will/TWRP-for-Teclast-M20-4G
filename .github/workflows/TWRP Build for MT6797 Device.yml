@@ -212,7 +212,7 @@ jobs:
           # 强制追加新配置
           echo 'BOARD_KERNEL_IMAGE_NAME := zImage' >> $BOARD_CONFIG
           echo 'TARGET_PREBUILT_KERNEL := prebuilts/kernel/arm64/zImage' >> $BOARD_CONFIG
-          # 【核心新增】开启极致压缩，尝试减小体积
+          # 开启极致压缩，尝试减小体积
           echo 'BOARD_RAMDISK_USE_LZ4 := true' >> $BOARD_CONFIG
           echo 'LZMA_RAMDISK_TARGETS := recovery' >> $BOARD_CONFIG
           # 排除一些非核心功能以节省空间
@@ -227,9 +227,9 @@ jobs:
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          # 7. 【核心新增】清理旧缓存，确保压缩参数生效
-          echo "🧹 清理旧的编译缓存 (make clobber)，以确保压缩参数生效..."
-          make clobber
+          # 7. 【核心修改】强制彻底清理旧的编译缓存
+          echo "🧹 强制彻底清理旧的编译缓存 (rm -rf out/)，以确保压缩参数生效..."
+          rm -rf out/
           
           # 8. 开始编译 TWRP
           echo "🏗️  开始编译 TWRP..."
