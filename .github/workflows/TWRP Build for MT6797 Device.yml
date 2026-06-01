@@ -1,4 +1,4 @@
-name: Build TWRP 11.0 for Teclast M20 (MT6797)
+name: Build TWRP for Teclast M20 (MT6797)
 
 on:
   workflow_dispatch:
