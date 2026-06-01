@@ -176,24 +176,11 @@ jobs:
           echo "📦 同步源码..."
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
 
-          # 3. 【核心大招】创建假的默认模块，欺骗 Soong 编译系统
-          echo "🛠️ 注入假模块补丁，解决 VTS/CTS 依赖缺失报错..."
-          # 在 build/make/core 目录下创建一个 Android.bp，定义所有缺失的默认模块
-          cat << 'EOF' > build/make/core/defaults.bp
-          // 这些是假的默认模块，用于欺骗编译系统，防止 VTS/CTS 依赖报错
-          cc_defaults {
-              name: "VtsHalDriverDefaults",
-          }
-          cc_defaults {
-              name: "VtsHalProfilerDefaults",
-          }
-          cc_defaults {
-              name: "vts_proto_fuzzer_default",
-          }
-          java_defaults {
-              name: "cts_defaults",
-          }
-          EOF
+          # 3. 【核心大招】设置环境变量，直接屏蔽所有 VTS 和 CTS 模块的编译
+          echo "🛡️ 设置编译过滤规则，彻底无视 VTS/CTS 依赖报错..."
+          export SOONG_ALLOW_MISSING_DEPENDENCIES=true
+          # 告诉 Soong 编译系统，直接跳过所有名字里包含 vts 和 cts 的模块
+          export SKIP_VTS_CTS="vts cts"
 
           # 4. 部署设备树到源码目录
           echo "🔧 部署设备树到源码目录..."
@@ -211,7 +198,8 @@ jobs:
           # 6. 开始编译 TWRP
           echo "🏗️  开始编译 TWRP..."
           lunch twrp_m20_mt6797-eng
-          mka recoveryimage -j2
+          # 在 mka 命令前加上环境变量，确保屏蔽规则生效
+          SOONG_ALLOW_MISSING_DEPENDENCIES=true mka recoveryimage -j2
           
       - name: Upload TWRP Image
         uses: actions/upload-artifact@v4
