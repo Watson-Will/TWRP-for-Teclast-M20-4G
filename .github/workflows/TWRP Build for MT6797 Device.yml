@@ -166,28 +166,19 @@ jobs:
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
 
-          # 2. 进入构建目录并初始化极简 TWRP 仓库
+          # 2. 进入构建目录并初始化 TWRP 11 源码仓库
           mkdir -p twrp_build
           cd twrp_build
           
-          echo "🚀 初始化 TWRP 极简源码仓库 (twrp-9.0 分支)..."
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-9.0 --depth=1
+          echo "🚀 初始化 TWRP 11.0 源码仓库 (包含完整基础依赖)..."
+          # 核心修改：换用这个包含基础依赖库的 twrp-11.0 清单
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11.0 --depth=1
           
-          echo "📦 同步基础源码..."
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
+          echo "📦 同步源码..."
+          # 增加 --fail-fast 参数，遇到网络问题直接报错，避免假成功
+          repo sync -c -j1 --force-sync --fail-fast --no-clone-bundle --no-tags
 
-          # 3. 【核心修复】手动拉取缺失的 skia 图形渲染依赖库
-          echo "🔧 修复缺失的 skia 依赖..."
-          # 创建目录并拉取 skia 仓库（使用与 TWRP 9.0 兼容的 android-9.0.0_r3 分支）
-          mkdir -p external/skia
-          cd external/skia
-          git init
-          git remote add origin https://android.googlesource.com/platform/external/skia
-          git fetch --depth 1 origin android-9.0.0_r3
-          git checkout FETCH_HEAD
-          cd ../..
-
-          # 4. 部署设备树到源码目录
+          # 3. 部署设备树到源码目录
           echo "🔧 部署设备树到源码目录..."
           mkdir -p device/teclast
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
@@ -196,11 +187,11 @@ jobs:
           echo "🔍 设备树文件检查："
           ls -R device/teclast/m20_mt6797/
 
-          # 5. 准备编译环境
+          # 4. 准备编译环境
           echo "🏭 配置编译环境..."
           . build/envsetup.sh
           
-          # 6. 开始编译 TWRP
+          # 5. 开始编译 TWRP
           echo "🏗️  开始编译 TWRP..."
           lunch twrp_m20_mt6797-eng
           mka recoveryimage -j2
