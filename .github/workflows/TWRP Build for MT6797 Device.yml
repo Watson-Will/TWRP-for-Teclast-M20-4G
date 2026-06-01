@@ -140,20 +140,23 @@ jobs:
           echo "📦 同步源码..."
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
           
-          echo "🧹 安全清理无用预编译文件（保留 GCC 4.9）..."
-          # ⚠️ 绝对不能删除 prebuilts/gcc，Android 9 NDK 构建强依赖它
-          # 改为删除以下不影响 recovery.img 生成的超大目录：
-          rm -rf prebuilts/jdk/jdk8
-          rm -rf prebuilts/sdk/current/androidx-stubs-src.jar
+          echo "🧹 安全清理（仅删除与 recovery 编译完全无关的组件）..."
+          # ⚠️ 严禁删除: gcc, go, jdk8, clang, make, ninja
+          # ✅ 以下组件不参与 TWRP 构建，可安全删除以释放约 3-5GB 空间：
           rm -rf prebuilts/qemu-kernel
           rm -rf prebuilts/gdb
-          rm -rf prebuilts/go
           rm -rf prebuilts/rust
           rm -rf external/chromium-webview
           rm -rf frameworks/ml
           rm -rf packages/apps/Calendar
           rm -rf packages/apps/Contacts
           rm -rf packages/apps/Messaging
+          rm -rf packages/apps/DeskClock
+          rm -rf packages/apps/Camera2
+          rm -rf device/google/cuttlefish
+          rm -rf hardware/qcom/audio/default
+          rm -rf hardware/qcom/display/default
+          rm -rf hardware/qcom/media/default
           
           df -h /
           
