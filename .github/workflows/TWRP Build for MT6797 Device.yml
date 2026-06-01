@@ -166,15 +166,15 @@ jobs:
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
 
-          # 2. 进入构建目录并初始化 AOSP TWRP 仓库
+          # 2. 进入构建目录并初始化极简 TWRP 仓库
           mkdir -p twrp_build
           cd twrp_build
           
-          echo "🚀 初始化 TWRP AOSP 源码仓库..."
-          # 核心修改：根据仓库实际情况，指定存在的 twrp-12.1 分支
-          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11
+          echo "🚀 初始化 TWRP 极简源码仓库 (twrp-12.1 分支)..."
+          # 核心修改：使用 platform_manifest_twrp_omni 极简清单，完美避开 CTS/VTS 依赖
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-12.1 --depth=1
           
-          echo "📦 同步源码..."
+          echo "📦 同步极简源码..."
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
 
           # 3. 部署设备树到源码目录
