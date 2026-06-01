@@ -166,23 +166,34 @@ jobs:
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
           chmod a+rx ~/.bin/repo
 
-          # 2. 进入构建目录并初始化 AOSP TWRP 仓库 (包含完整依赖)
+          # 2. 进入构建目录并初始化 AOSP TWRP 仓库
           mkdir -p twrp_build
           cd twrp_build
           
-          echo "🚀 初始化 TWRP AOSP 源码仓库 (包含完整基础依赖)..."
-          # 换回 aosp 清单，但指定存在的 twrp-12.1 分支
+          echo "🚀 初始化 TWRP AOSP 源码仓库..."
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1 --depth=1
           
           echo "📦 同步源码..."
           repo sync -c -j1 --force-sync --no-clone-bundle --no-tags
 
-          # 3. 【关键排雷】手动删除或清空会导致编译失败的 cts/vts 目录
-          echo "🧨 排除 CTS/VTS 测试模块（防止 undefined module 报错）..."
-          # 如果目录存在，则将其内容清空或移除，欺骗编译系统这些模块不存在
-          if [ -d "cts" ]; then rm -rf cts/*; fi
-          if [ -d "hardware/interfaces" ]; then find hardware/interfaces -name "*vts*" -exec rm -rf {} + 2>/dev/null || true; fi
-          if [ -d "test" ]; then rm -rf test/*; fi
+          # 3. 【核心大招】创建假的默认模块，欺骗 Soong 编译系统
+          echo "🛠️ 注入假模块补丁，解决 VTS/CTS 依赖缺失报错..."
+          # 在 build/make/core 目录下创建一个 Android.bp，定义所有缺失的默认模块
+          cat << 'EOF' > build/make/core/defaults.bp
+          // 这些是假的默认模块，用于欺骗编译系统，防止 VTS/CTS 依赖报错
+          cc_defaults {
+              name: "VtsHalDriverDefaults",
+          }
+          cc_defaults {
+              name: "VtsHalProfilerDefaults",
+          }
+          cc_defaults {
+              name: "vts_proto_fuzzer_default",
+          }
+          java_defaults {
+              name: "cts_defaults",
+          }
+          EOF
 
           # 4. 部署设备树到源码目录
           echo "🔧 部署设备树到源码目录..."
