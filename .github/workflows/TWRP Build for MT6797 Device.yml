@@ -117,7 +117,7 @@ jobs:
           BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
           BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
 
-          TW_THEME := landscape_xxhdpi
+          TW_THEME := landscape_hdpi
           TARGET_SCREEN_HEIGHT := 1600
           TARGET_SCREEN_WIDTH := 2560
           TW_FRAMERATE := 60
