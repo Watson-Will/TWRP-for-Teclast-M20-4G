@@ -140,12 +140,20 @@ jobs:
           echo "📦 同步源码..."
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
           
-          echo "🧹 清理无用预编译文件以释放编译空间..."
-          rm -rf prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
-          rm -rf prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9
+          echo "🧹 安全清理无用预编译文件（保留 GCC 4.9）..."
+          # ⚠️ 绝对不能删除 prebuilts/gcc，Android 9 NDK 构建强依赖它
+          # 改为删除以下不影响 recovery.img 生成的超大目录：
           rm -rf prebuilts/jdk/jdk8
           rm -rf prebuilts/sdk/current/androidx-stubs-src.jar
-          rm -rf out/soong/.intermediates/frameworks/base/api
+          rm -rf prebuilts/qemu-kernel
+          rm -rf prebuilts/gdb
+          rm -rf prebuilts/go
+          rm -rf prebuilts/rust
+          rm -rf external/chromium-webview
+          rm -rf frameworks/ml
+          rm -rf packages/apps/Calendar
+          rm -rf packages/apps/Contacts
+          rm -rf packages/apps/Messaging
           
           df -h /
           
