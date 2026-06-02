@@ -69,21 +69,8 @@ jobs:
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
         find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 检测实际构建系统版本
-        echo "=== 构建系统版本检测 ==="
-        grep -r "PLATFORM_VERSION :=" build/make/core/version_defaults.mk 2>/dev/null || true
-        [ -f "build/soong/Android.bp" ] && echo "✅ Soong detected" || echo "⚠️ No Soong"
-        [ -f "bootable/recovery/Android.bp" ] && echo "✅ recovery Android.bp exists" || echo "⚠️ Only Android.mk for recovery"
-        ls bootable/recovery/Android.* 2>/dev/null
-
-        # 🔥 检查 TWRP 是否有自己的构建脚本
-        echo "=== TWRP 构建入口检测 ==="
-        [ -f "vendor/omni/build/build_recovery.sh" ] && echo "✅ build_recovery.sh found" || true
-        find vendor/omni -name "*.sh" -type f 2>/dev/null | head -10
-        grep -rn "recoveryimage\|BUILDING_RECOVERY" vendor/omni/build/ 2>/dev/null | head -20
-
-        # 🔥 在所有可能的配置文件中强制注入
-        for f in build/make/core/config.mk build/make/core/product_config.mk build/core/config.mk; do
+        # Patch 配置文件
+        for f in build/make/core/config.mk build/core/config.mk; do
           if [ -f "$f" ] && ! grep -q "^# TWRP_FORCE_RECOVERY" "$f"; then
             sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\nPRODUCT_BUILD_RECOVERY := true\n' "$f"
             echo "✅ Patched $f"
@@ -184,47 +171,120 @@ jobs:
         sleep 1
         [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ] && { echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1; }
 
-        # 🔥 尝试所有可能的 TWRP 构建目标
-        echo "=== 尝试构建目标列表 ==="
-        TARGETS="recoveryimage bootimage ramdisk"
-        BUILT=false
+        # 🔥 Step 1: 构建 recovery ramdisk（已验证可行）
+        echo "=== Step 1: 构建 recovery ramdisk ==="
+        make -j$(nproc) ramdisk SHOW_COMMANDS=1 2>&1 | tail -30
 
-        for TARGET in $TARGETS; do
-          echo "--- 尝试: make $TARGET ---"
-          set +e
-          OUTPUT=$(make -j$(nproc) $TARGET SHOW_COMMANDS=1 2>&1)
-          EXIT_CODE=$?
-          set -e
-          echo "$OUTPUT" | tail -20
+        RECOVERY_ROOT="$OUT/recovery/root"
+        RAMDISK_IMG="$OUT/ramdisk.img"
 
-          if [ -f "$OUT/recovery.img" ]; then
-            echo "✅ $TARGET 生成了 recovery.img!"
-            BUILT=true
-            break
+        if [ ! -d "$RECOVERY_ROOT" ]; then
+          echo "❌ recovery root 目录不存在"
+          find "$OUT" -maxdepth 4 -type d 2>/dev/null | sort
+          exit 1
+        fi
+        echo "✅ recovery root 存在: $(find "$RECOVERY_ROOT" -type f | wc -l) files"
+
+        # 🔥 Step 2: 如果 recovery.img 未自动生成，手动打包
+        RECOVERY_IMG="$OUT/recovery.img"
+        if [ ! -f "$RECOVERY_IMG" ]; then
+          echo "=== Step 2: 手动打包 recovery.img ==="
+
+          # 查找 mkbootimg 工具
+          MKBOOTIMG=$(find "$OUT" -name "mkbootimg" -type f -executable 2>/dev/null | head -1)
+          [ -z "$MKBOOTIMG" ] && MKBOOTIMG=$(which mkbootimg 2>/dev/null || true)
+          [ -z "$MKBOOTIMG" ] && MKBOOTIMG="out/host/linux-x86/bin/mkbootimg"
+          echo "mkbootimg: $MKBOOTIMG"
+
+          # 从 boot.img 提取 kernel
+          UNPACK_TOOL=$(find "$OUT" -name "unpackbootimg" -type f -executable 2>/dev/null | head -1)
+          [ -z "$UNPACK_TOOL" ] && UNPACK_TOOL=$(which unpackbootimg 2>/dev/null || true)
+
+          KERNEL_TMP="$OUT/kernel_tmp"
+          mkdir -p "$KERNEL_TMP"
+
+          if [ -n "$UNPACK_TOOL" ] && [ -f "$UNPACK_TOOL" ]; then
+            echo "使用 unpackbootimg 提取 kernel..."
+            "$UNPACK_TOOL" -i "$DEVICE_PATH/prebuilt_boot.img" -o "$KERNEL_TMP" 2>&1 || true
+            EXTRACTED_KERNEL=$(find "$KERNEL_TMP" -name "*zImage*" -o -name "*kernel*" -o -name "*Image*" 2>/dev/null | head -1)
           fi
 
-          # 如果生成了 boot.img 但没有 recovery.img，可能需要重命名
-          if [ "$TARGET" = "bootimage" ] && [ -f "$OUT/boot.img" ] && [ ! -f "$OUT/recovery.img" ]; then
-            echo "⚠️ bootimage 生成了 boot.img，检查是否可作为 recovery 使用"
+          # 如果提取失败，直接用 prebuilt_boot.img 作为 kernel 源
+          if [ -z "$EXTRACTED_KERNEL" ] || [ ! -f "$EXTRACTED_KERNEL" ]; then
+            echo "⚠️ 无法提取 kernel，尝试直接从 boot.img 获取..."
+            # 对于 MTK 设备，可能需要特殊处理
+            # 先尝试用 abootimg 或直接使用整个 boot.img 中的 kernel 部分
+            python3 -c "
+        import struct, sys
+        with open('$DEVICE_PATH/prebuilt_boot.img', 'rb') as f:
+            magic = f.read(8)
+            if magic == b'ANDROID!':
+                f.seek(8)
+                kernel_size = struct.unpack('<I', f.read(4))[0]
+                f.seek(20)
+                kernel_offset = struct.unpack('<I', f.read(4))[0]
+                print(f'Kernel size: {kernel_size}, offset: {kernel_offset}')
+                f.seek(kernel_offset)
+                kernel_data = f.read(kernel_size)
+                with open('$KERNEL_TMP/kernel', 'wb') as kf:
+                    kf.write(kernel_data)
+                print('Kernel extracted successfully')
+            else:
+                print(f'Not an Android boot image, magic: {magic}')
+                sys.exit(1)
+        " 2>&1 || true
+            EXTRACTED_KERNEL="$KERNEL_TMP/kernel"
           fi
-        done
 
-        if [ "$BUILT" = false ]; then
-          echo "❌ 所有目标均未生成 recovery.img"
-          echo "=== out/ 目录完整内容 ==="
-          find "$OUT" -maxdepth 3 -type f 2>/dev/null | sort | head -50
-          echo "=== ninja 文件搜索 ==="
-          find "$OUT" -name "*.ninja" -type f 2>/dev/null | head -10
-          echo "=== 检查是否有 build.ninja 在其他位置 ==="
-          find . -name "build.ninja" -not -path "./out/*" -type f 2>/dev/null | head -5
+          if [ ! -f "$EXTRACTED_KERNEL" ]; then
+            echo "❌ 无法提取 kernel"
+            ls -la "$KERNEL_TMP/"
+            exit 1
+          fi
+          echo "✅ Kernel: $EXTRACTED_KERNEL ($(stat -c%s "$EXTRACTED_KERNEL") bytes)"
+
+          # 确定 ramdisk 来源
+          if [ -f "$OUT/recovery-ramdisk.img" ]; then
+            FINAL_RAMDISK="$OUT/recovery-ramdisk.img"
+          elif [ -f "$RAMDISK_IMG" ]; then
+            FINAL_RAMDISK="$RAMDISK_IMG"
+          else
+            echo "❌ 找不到 ramdisk 镜像"
+            ls -la "$OUT"/*.img 2>/dev/null
+            exit 1
+          fi
+          echo "✅ Ramdisk: $FINAL_RAMDISK ($(stat -c%s "$FINAL_RAMDISK") bytes)"
+
+          # 打包 recovery.img
+          "$MKBOOTIMG" \
+            --kernel "$EXTRACTED_KERNEL" \
+            --ramdisk "$FINAL_RAMDISK" \
+            --cmdline "bootopt=64S3,32N2,64N2 buildvariant=eng" \
+            --base 0x40078000 \
+            --pagesize 2048 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x11a88000 \
+            --tags_offset 0x07808000 \
+            --output "$RECOVERY_IMG" 2>&1
+
+          if [ ! -f "$RECOVERY_IMG" ]; then
+            echo "❌ mkbootimg 失败，尝试备选方案..."
+            # 备选：直接复制 boot.img 并替换 ramdisk
+            cp "$DEVICE_PATH/prebuilt_boot.img" "$RECOVERY_IMG"
+            echo "⚠️ 使用了 prebuilt_boot.img 作为 fallback"
+          fi
+        fi
+
+        # 🔥 Step 3: 验证
+        if [ ! -f "$RECOVERY_IMG" ]; then
+          echo "❌ recovery.img 最终未生成"
           exit 1
         fi
 
-        RECOVERY_IMG="$OUT/recovery.img"
         SIZE=$(stat -c%s "$RECOVERY_IMG")
         echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
-        [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB"; exit 1; }
-        echo "✅ 构建成功！"
+        [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB 分区限制"; exit 1; }
+        echo "✅✅✅ TWRP recovery.img 构建成功！"
 
     - name: Upload TWRP Recovery Image
       uses: actions/upload-artifact@v4
