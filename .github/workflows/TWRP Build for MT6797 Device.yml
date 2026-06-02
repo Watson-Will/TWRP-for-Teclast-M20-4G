@@ -105,7 +105,23 @@ jobs:
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
           TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
-          # ✅ 修复 mkbootimg 大小检查除零错误
+          # ✅ 启用 LZMA 压缩（核心手段，预计节省 2-4MB）
+          LZMA_RAMDISK_TARGETS := recovery
+          
+          # ✅ 移除所有调试符号与预编译优化
+          TARGET_STRIP_MODULE_USE := true
+          WITH_DEXPREOPT := false
+          
+          # ✅ 禁用 Recovery 中的 adb（节省 ~800KB，不影响ZIP安装）
+          TW_EXCLUDE_ADB := true
+          
+          # ✅ 使用最小化 busybox（节省 ~500KB）
+          TW_USE_MINIMAL_BUSYBOX := true
+          
+          # ✅ 禁用 TWRP App 提示与内置安装器（节省 ~600KB）
+          TW_EXCLUDE_TWRPAPP := true
+          
+          # ✅ 修正块大小为 MTK 标准值
           BOARD_FLASH_BLOCK_SIZE := 131072
           
           # === 64位配置 ===
@@ -200,6 +216,14 @@ jobs:
           # 验证版本
           java -version
           javac -version
+
+      - name: Add Swap for LZMA Compression
+        run: |
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
       - name: Sync TWRP Source & Build
         run: |
