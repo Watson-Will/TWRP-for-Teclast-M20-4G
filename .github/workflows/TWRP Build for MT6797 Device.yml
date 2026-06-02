@@ -43,7 +43,7 @@ jobs:
           rm -f *.deb
         fi
 
-        - name: Generate Device Tree for MT6797
+    - name: Generate Device Tree for MT6797
       run: |
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p $DEVICE_PATH/recovery/root/etc
