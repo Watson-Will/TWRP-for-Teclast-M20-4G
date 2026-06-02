@@ -76,18 +76,20 @@ jobs:
 
       - name: Generate Device Tree for MT6797
         run: |
-          # ... 保持原有设备树生成逻辑完全不变 ...
           DEVICE_PATH="device/teclast/m20_mt6797"
           mkdir -p $DEVICE_PATH/recovery/root/etc
+          
           if [ -f "boot.img" ]; then
             cp boot.img $DEVICE_PATH/prebuilt_boot.img
             echo "✅ 原厂 boot.img 已复制为预编译内核"
           else
             echo "❌ 错误：项目根目录未找到 boot.img！"; exit 1
           fi
+
           cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
           PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
           EOF
+
           cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
           $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
           $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
@@ -98,6 +100,8 @@ jobs:
           PRODUCT_MANUFACTURER := Teclast
           ALLOW_MISSING_DEPENDENCIES := true
           EOF
+
+          # 🔽 核心修复：纠正分区大小 + 移除非法编译标志 🔽
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
           TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
@@ -119,8 +123,11 @@ jobs:
           BOARD_RAMDISK_OFFSET := 0x11a88000
           BOARD_KERNEL_TAGS_OFFSET := 0x07808000
           BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
-          BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
+          
+          # ⚠️ 关键修正：boot 和 recovery 均严格对齐 scatter 文件的 16MB (0x1000000)
+          BOARD_BOOTIMAGE_PARTITION_SIZE := 16777216
           BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
+          
           BOARD_HAS_LARGE_FILESYSTEM := true
           BOARD_SYSTEMIMAGE_PARTITION_TYPE := ext4
           BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := ext4
@@ -138,11 +145,8 @@ jobs:
           TW_USE_TOOLBOX := true
           TW_SCREEN_BLANK_ON_BOOT := true
 
-          # 🔽 极限瘦身配置（适配 16MB 分区）🔽
-          # 1. 启用 LZMA 压缩 ramdisk（可节省 2-5MB）
+          # 🔽 极限瘦身配置（安全合规版）🔽
           LZMA_RAMDISK_TARGETS := recovery
-
-          # 2. 移除所有非必要文件系统和加密支持
           TW_EXCLUDE_NTFS_3G := true
           TW_EXCLUDE_FUSE_EXFAT := true
           TW_NO_EXFAT_FUSE := true
@@ -150,24 +154,22 @@ jobs:
           TW_EXCLUDE_TWRPAPP := true
           TW_EXCLUDE_CRYPTO := true
           TW_EXCLUDE_ENCRYPTED_BACKUPS := true
-
-          # 3. 移除所有多余功能与 MTP
           TW_EXCLUDE_MTP := true
           TW_NO_USB_STORAGE := true
           TW_NO_SCREEN_TIMEOUT := true
           TW_NO_CPU_TEMP := true
           TW_EXCLUDE_HAPTICS := true
           TW_EXCLUDE_BATTERY_PERCENT := true
-
-          # 4. 语言和界面精简（仅保留英文）
           TW_EXTRA_LANGUAGES := false
           TW_DEFAULT_LANGUAGE := en
-
-          # 5. 启用底层编译器极限优化（进一步压缩体积）
-          TARGET_GLOBAL_CFLAGS += -Oz -ffunction-sections -fdata-sections
-          TARGET_GLOBAL_CPPFLAGS += -Oz -ffunction-sections -fdata-sections
-          TARGET_GLOBAL_LDFLAGS += -Wl,--gc-sections -Wl,--strip-all
+          
+          # 额外安全瘦身（替代被 Soong 禁用的全局编译标志）
+          TW_EXCLUDE_NANO := true
+          TW_EXCLUDE_BASH := true
+          TW_EXCLUDE_PYTHON := true
+          BOARD_USES_FULL_RECOVERY_IMAGE := false
           EOF
+
           cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
           /boot           emmc    /dev/block/by-name/boot           flags=backup=1
           /recovery       emmc    /dev/block/by-name/recovery       flags=backup=1
@@ -178,7 +180,7 @@ jobs:
           /sdcard         vfat    /dev/block/mmcblk1p1              flags=display="Micro SDcard";storage;wipeingui;removable
           /usb-otg        auto    /dev/block/sda1                   flags=display="USB-OTG";storage;wipeingui;removable
           EOF
-          echo "✅ 设备树生成完成！"
+          echo "✅ 设备树生成完成（分区大小已修正，非法编译标志已移除）！"
 
       - name: Sync TWRP Source & Build
         run: |
