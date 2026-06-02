@@ -151,7 +151,7 @@ jobs:
 
     - name: Sync Source & Safe Cleanup & Build
       run: |
-        set -e  # 🔥 任何命令失败立即退出，不再静默吞错
+        set -e
         
         mkdir -p twrp_build && cd twrp_build
         
@@ -171,11 +171,16 @@ jobs:
         
         source build/envsetup.sh
         
-        # 🔥 显式捕获 lunch 输出并验证
+        # 🔥 修复：使用进程替换代替管道，保留 lunch 设置的环境变量
         echo "🔧 执行 lunch twrp_m20_mt6797-eng ..."
-        lunch twrp_m20_mt6797-eng 2>&1 | tee /tmp/lunch_output.txt
+        lunch twrp_m20_mt6797-eng > >(tee /tmp/lunch_output.txt) 2>&1
         
-        # 双重验证：TARGET_PRODUCT 和 OUT 都必须正确
+        # 等待 tee 写完
+        sleep 1
+        
+        # 🔥 现在 $TARGET_PRODUCT 在当前 Shell 中可用了
+        echo "🔍 验证: TARGET_PRODUCT=$TARGET_PRODUCT, OUT=$OUT"
+        
         if [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ]; then
           echo "❌ lunch 产品名不匹配！期望: twrp_m20_mt6797, 实际: $TARGET_PRODUCT"
           cat /tmp/lunch_output.txt
@@ -190,7 +195,6 @@ jobs:
         export LZMA_RAMDISK_TARGETS=recovery
         export BOARD_USE_LZMA_COMPRESSION=true
         
-        # 🔥 移除 clean-recoveryimage，避免破坏首次构建状态
         make -j$(nproc) recoveryimage SHOW_COMMANDS=1
 
         RECOVERY_IMG="$OUT/recovery.img"
