@@ -69,44 +69,64 @@ jobs:
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
         find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 确认正确的 Makefile 路径并 patch
-        if [ -f "build/make/core/config.mk" ]; then
-          CORE_CONFIG="build/make/core/config.mk"
-          CORE_MAKEFILE="build/make/core/Makefile"
-        else
-          CORE_CONFIG="build/core/config.mk"
-          CORE_MAKEFILE="build/core/Makefile"
-        fi
+        # 🔥 第一步：精确定位 recoveryimage 目标的注册逻辑
+        CORE_MAKEFILE="build/make/core/Makefile"
+        [ ! -f "$CORE_MAKEFILE" ] && CORE_MAKEFILE="build/core/Makefile"
 
-        echo "=== recoveryimage 在 config.mk 中的上下文 ==="
-        grep -n -B5 -A5 "recoveryimage" "$CORE_CONFIG" | head -40
+        echo "=== 搜索 Makefile 中所有 recoveryimage 相关行 ==="
+        grep -n "recoveryimage" "$CORE_MAKEFILE" || echo "(未在 Makefile 中找到)"
 
-        echo "=== BUILDING_RECOVERY_IMAGE 在 Makefile 中的使用 ==="
+        echo "=== 搜索 Makefile 中 BUILDING_RECOVERY_IMAGE 相关行 ==="
         grep -n "BUILDING_RECOVERY_IMAGE" "$CORE_MAKEFILE" || echo "(未在 Makefile 中找到)"
 
-        # 🔥 在正确的 config.mk 中查找 recoveryimage 注册的条件
-        echo "=== config.mk 中 recoveryimage 附近的条件守卫 ==="
-        REC_LINE=$(grep -n "recoveryimage-nodeps" "$CORE_CONFIG" | head -1 | cut -d: -f1)
-        if [ -n "$REC_LINE" ]; then
-          START=$((REC_LINE > 30 ? REC_LINE - 30 : 1))
-          END=$((REC_LINE + 10))
-          sed -n "${START},${END}p" "$CORE_CONFIG"
+        echo "=== 搜索 Makefile 中 PRODUCT_BUILD_RECOVERY 相关行 ==="
+        grep -n "PRODUCT_BUILD_RECOVERY" "$CORE_MAKEFILE" || echo "(未在 Makefile 中找到)"
+
+        # 🔥 第二步：找到 recoveryimage phony target 的实际定义位置
+        # 它可能在 Makefile 中通过 ifeq 条件动态生成
+        echo "=== recoveryimage 定义上下文 (前后80行) ==="
+        REC_DEF_LINE=$(grep -n "^recoveryimage:" "$CORE_MAKEFILE" 2>/dev/null | head -1 | cut -d: -f1 || true)
+        if [ -z "$REC_DEF_LINE" ]; then
+          # 可能是通过 eval 或变量间接定义的，搜索更宽泛的模式
+          REC_DEF_LINE=$(grep -n "recoveryimage" "$CORE_MAKEFILE" 2>/dev/null | grep -v "nodeps\|#\|dont_bother" | head -1 | cut -d: -f1 || true)
         fi
 
-        # 🔥 直接 patch：在 config.mk 中 recoveryimage 注册之前强制设置变量
-        # 找到包含 recoveryimage 的条件块，在其前面注入
+        if [ -n "$REC_DEF_LINE" ]; then
+          START=$((REC_DEF_LINE > 80 ? REC_DEF_LINE - 80 : 1))
+          END=$((REC_DEF_LINE + 30))
+          sed -n "${START},${END}p" "$CORE_MAKEFILE"
+        else
+          echo "(未在 Makefile 中找到 recoveryimage 定义)"
+          echo "=== 搜索整个 build/make/ 目录 ==="
+          grep -rn "^recoveryimage:" build/make/ 2>/dev/null | head -5
+          grep -rn "recoveryimage" build/make/core/tasks/ 2>/dev/null | head -10
+        fi
+
+        # 🔥 第三步：暴力 patch —— 直接在 Makefile 末尾追加 recoveryimage 目标
+        # 这是最后手段：如果构建系统不自动注册，我们就手动注册
+        echo "🔧 强制追加 recoveryimage 目标到 $CORE_MAKEFILE"
+        cat >> "$CORE_MAKEFILE" << 'MAKEPATCH'
+
+        # === TWRP FORCE RECOVERY TARGET ===
+        BUILDING_RECOVERY_IMAGE := true
+        RECOVERY_VARIANT := twrp
+        .PHONY: recoveryimage
+        recoveryimage: $(PRODUCT_OUT)/recovery.img
+        	@echo "TWRP: recoveryimage target invoked"
+        
+        ifneq ($(wildcard bootable/recovery/Android.mk),)
+        include bootable/recovery/Android.mk
+        endif
+        # === END TWRP FORCE ===
+        MAKEPATCH
+        echo "✅ Patch appended"
+        tail -15 "$CORE_MAKEFILE"
+
+        # 同时确保 config.mk 也有变量（双重保险）
+        CORE_CONFIG="build/make/core/config.mk"
+        [ ! -f "$CORE_CONFIG" ] && CORE_CONFIG="build/core/config.mk"
         if ! grep -q "^# TWRP_FORCE_RECOVERY" "$CORE_CONFIG"; then
-          echo "🔧 Patching $CORE_CONFIG ..."
-          # 在文件顶部注入，确保全局生效
-          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\nPRODUCT_BUILD_RECOVERY := true\n' "$CORE_CONFIG"
-          echo "✅ Patch applied to $CORE_CONFIG"
-          head -8 "$CORE_CONFIG"
-        fi
-
-        # 同时 patch Makefile 作为双重保险
-        if [ -f "$CORE_MAKEFILE" ] && ! grep -q "^# TWRP_FORCE_RECOVERY" "$CORE_MAKEFILE"; then
-          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\n' "$CORE_MAKEFILE"
-          echo "✅ Also patched $CORE_MAKEFILE"
+          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\n' "$CORE_CONFIG"
         fi
 
         # 生成设备树
@@ -121,14 +141,12 @@ jobs:
 
         cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << 'EOF'
         $(call inherit-product, vendor/omni/config/common.mk)
-        
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
         PRODUCT_BRAND := Teclast
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
-        
         PRODUCT_COPY_FILES += \
             $(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
@@ -205,17 +223,15 @@ jobs:
         echo "=== 验证 BUILDING_RECOVERY_IMAGE ==="
         make -qp 2>/dev/null | grep "BUILDING_RECOVERY_IMAGE" || echo "(仍未设置!)"
 
+        echo "=== 验证 recoveryimage 目标 ==="
+        make -n recoveryimage 2>&1 | head -20
+
         if ! make -n recoveryimage >/dev/null 2>&1; then
           echo "❌ recoveryimage 仍未注册！"
-          echo "=== Patch 后的 config.mk 前10行 ==="
-          head -10 "$CORE_CONFIG"
-          echo "=== recoveryimage 完整条件块 ==="
-          REC_LINE=$(grep -n "recoveryimage" "$CORE_CONFIG" | head -1 | cut -d: -f1)
-          START=$((REC_LINE > 50 ? REC_LINE - 50 : 1))
-          END=$((REC_LINE + 20))
-          sed -n "${START},${END}p" "$CORE_CONFIG"
-          echo "=== make -qp 中所有 PHONY 目标 ==="
-          make -qp 2>/dev/null | grep "^\.PHONY:" | tr ' ' '\n' | grep -i recov || echo "(无 recovery 相关 PHONY)"
+          echo "=== Makefile 末尾 patch 内容 ==="
+          tail -20 "$CORE_MAKEFILE"
+          echo "=== make -qp 中所有含 image 的目标 ==="
+          make -qp 2>/dev/null | grep -E "^[a-z]+image:" | sort -u | head -20
           exit 1
         fi
 
