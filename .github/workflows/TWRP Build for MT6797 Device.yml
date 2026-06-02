@@ -217,8 +217,13 @@ jobs:
           java -version
           javac -version
 
-      - name: Add Swap for LZMA Compression
+      - name: Prepare LZMA Tools and Swap
         run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils lzma
+          # 验证 lzma 可用
+          which lzma && lzma --version
+          # 添加 swap 防止 LZMA OOM
           sudo fallocate -l 4G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
