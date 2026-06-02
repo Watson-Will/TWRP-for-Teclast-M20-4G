@@ -25,17 +25,13 @@ jobs:
         sudo apt-get update -qq
         sudo apt-get install -y git wget curl unzip python2 python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils zip
         
-        # 🔥 关键修复：安装 Google repo 工具
         mkdir -p ~/bin
         curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
         chmod a+x ~/bin/repo
         echo "$HOME/bin" >> $GITHUB_PATH
         
-        # 配置 Git 身份（repo init 必需）
         git config --global user.name "TWRP Builder"
         git config --global user.email "builder@twrp.me"
-        
-        # Python2 兼容链接
         sudo ln -sf /usr/bin/python2 /usr/bin/python
         
     - name: Install Legacy ncurses & tinfo Libraries
@@ -59,6 +55,7 @@ jobs:
 
         cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
+        COMMON_LUNCH_CHOICES := twrp_m20_mt6797-eng
         EOF
 
         cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
@@ -70,6 +67,10 @@ jobs:
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
+        # 🔥 关键：显式声明 recovery 模块
+        PRODUCT_PACKAGES += \
+            recovery \
+            twrp
         EOF
 
         cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
@@ -151,16 +152,15 @@ jobs:
         sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
         free -h
 
-    - name: Sync Source & Physical Cleanup & Build
+    - name: Sync Source & Safe Cleanup & Build
       run: |
         mkdir -p twrp_build && cd twrp_build
         
-        # ✅ repo 已在上游步骤安装并加入 PATH，此处可直接使用
         repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-8.1 --depth=1
         repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
         
-        echo "🧹 开始物理清理冗余组件..."
-        rm -rf packages/apps/*
+        # 🔥 安全清理：只删确定不影响构建系统的冗余内容
+        echo "🧹 开始安全清理..."
         rm -rf frameworks/ml
         rm -rf external/chromium-webview
         rm -rf external/ant-wireless
@@ -168,9 +168,11 @@ jobs:
         rm -rf device/generic/goldfish
         rm -rf vendor/qcom/opensource/dataservices
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
-        find . -name "*.apk" -type f -delete
-        find . -name "*.odex" -type f -delete
-        echo "✅ 物理清理完成！"
+        # ⚠️ 不再删除 packages/apps/*，避免破坏构建依赖
+        # 改为删除已编译的 APK/ODEX 残留
+        find . -path ./out -prune -o -name "*.apk" -type f -delete
+        find . -path ./out -prune -o -name "*.odex" -type f -delete
+        echo "✅ 安全清理完成！"
         
         mkdir -p device/teclast
         cp -r ../device/teclast/m20_mt6797 ./device/teclast/
@@ -178,12 +180,21 @@ jobs:
         source build/envsetup.sh
         lunch twrp_m20_mt6797-eng
         
+        # 🔥 验证 lunch 是否成功识别设备
+        if [ -z "$OUT" ]; then
+          echo "❌ lunch 失败：未设置 OUT 环境变量"; exit 1
+        fi
+        echo "📂 输出目录: $OUT"
+        
         export LZMA_RAMDISK_TARGETS=recovery
         export BOARD_USE_LZMA_COMPRESSION=true
         
-        make -j$(nproc) recoveryimage
+        # 🔥 强制重新生成构建规则，避免 "no work to do"
+        make clean-recoveryimage || true
+        make -j$(nproc) recoveryimage SHOW_COMMANDS=1
 
-        RECOVERY_IMG="out/target/product/m20_mt6797/recovery.img"
+        # 🔥 使用 $OUT 动态定位 recovery.img
+        RECOVERY_IMG="$OUT/recovery.img"
         if [ -f "$RECOVERY_IMG" ]; then
           SIZE=$(stat -c%s "$RECOVERY_IMG")
           MAX_SIZE=16777216
@@ -195,7 +206,10 @@ jobs:
             echo "✅ 构建成功！镜像大小合规。"
           fi
         else
-          echo "❌ 错误：recovery.img 未生成！"; exit 1
+          echo "❌ 错误：recovery.img 未在 $OUT 中生成！"
+          echo "📋 OUT 目录内容:"
+          ls -la "$OUT/" || echo "OUT 目录不存在"
+          exit 1
         fi
 
     - name: Upload TWRP Recovery Image
