@@ -20,10 +20,22 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Install Dependencies
+    - name: Install Dependencies & Repo Tool
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y git wget curl unzip python2 python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils zip
+        
+        # 🔥 关键修复：安装 Google repo 工具
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        echo "$HOME/bin" >> $GITHUB_PATH
+        
+        # 配置 Git 身份（repo init 必需）
+        git config --global user.name "TWRP Builder"
+        git config --global user.email "builder@twrp.me"
+        
+        # Python2 兼容链接
         sudo ln -sf /usr/bin/python2 /usr/bin/python
         
     - name: Install Legacy ncurses & tinfo Libraries
@@ -40,7 +52,6 @@ jobs:
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p $DEVICE_PATH/recovery/root/etc
         
-        # ⚠️ 强制检查原厂 boot.img
         if [ ! -f "boot.img" ]; then
           echo "❌ 错误：请在仓库根目录放入小写的 boot.img！"; exit 1
         fi
@@ -61,15 +72,10 @@ jobs:
         ALLOW_MISSING_DEPENDENCIES := true
         EOF
 
-        # 🔽 BoardConfig.mk (物理级精简配置) 🔽
         cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
-
-        # --- 强制使用预编译内核 (节省 3-5MB) ---
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
         TARGET_NO_KERNEL := true
-
-        # --- 架构与平台 ---
         TARGET_ARCH := arm64
         TARGET_ARCH_VARIANT := armv8-a
         TARGET_CPU_ABI := arm64-v8a
@@ -79,8 +85,6 @@ jobs:
         TARGET_BOARD_PLATFORM := mt6797
         TARGET_BOOTLOADER_BOARD_NAME := mt6797
         TARGET_NO_BOOTLOADER := true
-
-        # --- 内核参数 (保持与你之前一致) ---
         BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2 buildvariant=eng
         BOARD_KERNEL_BASE := 0x40078000
         BOARD_KERNEL_PAGESIZE := 2048
@@ -88,14 +92,10 @@ jobs:
         BOARD_RAMDISK_OFFSET := 0x11a88000
         BOARD_KERNEL_TAGS_OFFSET := 0x07808000
         BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
-        
-        # --- 🔥 体积控制核心：LZMA + 裁剪 🔥 ---
         LZMA_RAMDISK_TARGETS := recovery
         BOARD_USE_LZMA_COMPRESSION := true
         WITH_DEXPREOPT := false
         TARGET_STRIP_MODULE_USE := true
-        
-        # 极限功能裁剪
         TW_EXCLUDE_ADB := true
         TW_EXCLUDE_TWRPAPP := true
         TW_EXCLUDE_NANO := true
@@ -111,8 +111,6 @@ jobs:
         TW_NO_CPU_TEMP := true
         TW_USE_MINIMAL_BUSYBOX := true
         TW_USE_TOOLBOX := true
-
-        # --- 分区与显示 ---
         BOARD_FLASH_BLOCK_SIZE := 131072
         BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
         BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
@@ -127,7 +125,6 @@ jobs:
         TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
         EOF
 
-        # 创建 fstab
         cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
         /boot emmc /dev/block/by-name/boot flags=backup=1
         /recovery emmc /dev/block/by-name/recovery flags=backup=1
@@ -158,11 +155,10 @@ jobs:
       run: |
         mkdir -p twrp_build && cd twrp_build
         
-        # ✅ 回归稳定的 OmniROM minimal-manifest
+        # ✅ repo 已在上游步骤安装并加入 PATH，此处可直接使用
         repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-8.1 --depth=1
         repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
         
-        # 🔥🔥🔥 关键：物理删除冗余源码 (直接减少 3-6MB 体积) 🔥🔥🔥
         echo "🧹 开始物理清理冗余组件..."
         rm -rf packages/apps/*
         rm -rf frameworks/ml
@@ -176,21 +172,17 @@ jobs:
         find . -name "*.odex" -type f -delete
         echo "✅ 物理清理完成！"
         
-        # 部署设备树
         mkdir -p device/teclast
         cp -r ../device/teclast/m20_mt6797 ./device/teclast/
         
-        # 编译
         source build/envsetup.sh
         lunch twrp_m20_mt6797-eng
         
-        # 🔥 强制注入 LZMA 环境变量 (防止 BoardConfig 被覆盖)
         export LZMA_RAMDISK_TARGETS=recovery
         export BOARD_USE_LZMA_COMPRESSION=true
         
         make -j$(nproc) recoveryimage
 
-        # 体积校验
         RECOVERY_IMG="out/target/product/m20_mt6797/recovery.img"
         if [ -f "$RECOVERY_IMG" ]; then
           SIZE=$(stat -c%s "$RECOVERY_IMG")
