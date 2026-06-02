@@ -57,35 +57,20 @@ jobs:
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
 
-        # 🔥 核心修复：必须继承 omni_device.mk 才能注册 recoveryimage 目标
+        # 🔥 注意：这里不再硬编码 inherit-product，改为在 Sync 步骤中动态生成
+        # 先创建一个占位符产品 mk
         cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
+        # TWRP_CORE_INHERIT 将在构建步骤中被替换为实际路径
+        $(call inherit-product, TWRP_CORE_INHERIT_PLACEHOLDER)
         $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
         $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
-        $(call inherit-product, vendor/omni/config/common.mk)
         
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
         PRODUCT_BRAND := Teclast
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
-        
         ALLOW_MISSING_DEPENDENCIES := true
-        
-        # TWRP specific overrides
-        TW_THEME := landscape_hdpi
-        TARGET_SCREEN_WIDTH := 2560
-        TARGET_SCREEN_HEIGHT := 1600
-        TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
-        TW_MAX_BRIGHTNESS := 255
-        TW_DEFAULT_BRIGHTNESS := 120
-        RECOVERY_SDCARD_ON_DATA := true
-        TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
-        BOARD_FLASH_BLOCK_SIZE := 131072
-        BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
-        BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
-        BOARD_HAS_LARGE_FILESYSTEM := true
-        LZMA_RAMDISK_TARGETS := recovery
-        BOARD_USE_LZMA_COMPRESSION := true
         EOF
 
         cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
@@ -108,8 +93,21 @@ jobs:
         BOARD_RAMDISK_OFFSET := 0x11a88000
         BOARD_KERNEL_TAGS_OFFSET := 0x07808000
         BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
+        LZMA_RAMDISK_TARGETS := recovery
+        BOARD_USE_LZMA_COMPRESSION := true
         WITH_DEXPREOPT := false
-        TARGET_STRIP_MODULE_USE := true
+        TW_THEME := landscape_hdpi
+        TARGET_SCREEN_WIDTH := 2560
+        TARGET_SCREEN_HEIGHT := 1600
+        TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
+        TW_MAX_BRIGHTNESS := 255
+        TW_DEFAULT_BRIGHTNESS := 120
+        RECOVERY_SDCARD_ON_DATA := true
+        TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
+        BOARD_FLASH_BLOCK_SIZE := 131072
+        BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
+        BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
+        BOARD_HAS_LARGE_FILESYSTEM := true
         TW_EXCLUDE_ADB := true
         TW_EXCLUDE_TWRPAPP := true
         TW_EXCLUDE_NANO := true
@@ -137,7 +135,7 @@ jobs:
         /sdcard vfat /dev/block/mmcblk1p1 flags=display="Micro SDcard";storage;wipeingui;removable
         /usb-otg auto /dev/block/sda1 flags=display="USB-OTG";storage;wipeingui;removable
         EOF
-        echo "✅ 设备树生成完成！"
+        echo "✅ 设备树模板生成完成！"
 
     - name: Setup JDK 8
       run: |
@@ -173,6 +171,34 @@ jobs:
         mkdir -p device/teclast
         cp -r ../device/teclast/m20_mt6797 ./device/teclast/
         
+        # 🔥 核心修复：动态探测 TWRP 核心 mk 的实际路径
+        TWRP_CORE_MK=""
+        for candidate in \
+          "vendor/omni/config/common.mk" \
+          "vendor/twrp/config/common.mk" \
+          "bootable/recovery/twrp.mk" \
+          "build/target/product/twrp.mk"; do
+          if [ -f "$candidate" ]; then
+            TWRP_CORE_MK="$candidate"
+            break
+          fi
+        done
+        
+        if [ -z "$TWRP_CORE_MK" ]; then
+          echo "❌ 无法找到 TWRP 核心配置文件！已搜索的路径均不存在。"
+          echo "📋 vendor/ 目录结构:"
+          ls -la vendor/ || true
+          echo "📋 bootable/recovery/ 目录结构:"
+          ls -la bootable/recovery/ | head -20 || true
+          exit 1
+        fi
+        echo "✅ 找到 TWRP 核心配置: $TWRP_CORE_MK"
+        
+        # 将占位符替换为实际路径
+        sed -i "s|TWRP_CORE_INHERIT_PLACEHOLDER|$TWRP_CORE_MK|g" device/teclast/m20_mt6797/twrp_m20_mt6797.mk
+        echo "📋 最终产品 mk 内容:"
+        cat device/teclast/m20_mt6797/twrp_m20_mt6797.mk
+        
         source build/envsetup.sh
         
         echo "🔧 执行 lunch twrp_m20_mt6797-eng ..."
@@ -186,13 +212,11 @@ jobs:
         fi
         echo "✅ lunch 成功！"
         
-        # 🔥 关键诊断：检查 recoveryimage 目标是否真的被注册了
-        echo "🔍 检查可用的 recovery 相关目标..."
-        make -j1 dump-products 2>/dev/null | grep -i recovery || true
+        # 预检 recoveryimage 目标
         if ! make -n recoveryimage >/dev/null 2>&1; then
-          echo "❌ recoveryimage 目标未注册！请检查 vendor/omni/config/common.mk 是否被正确继承"
-          echo "📋 可用的顶层目标:"
-          make -j1 help 2>/dev/null | head -50 || true
+          echo "❌ recoveryimage 目标仍未注册！"
+          echo "📋 lunch 输出中的关键信息:"
+          grep -iE "(error|warning|recovery|twrp)" /tmp/lunch_output.txt || true
           exit 1
         fi
         echo "✅ recoveryimage 目标已确认存在"
