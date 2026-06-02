@@ -185,6 +185,20 @@ jobs:
           EOF
           echo "✅ 设备树生成完成（已适配 TWRP 8.1 架构命名规范）！"
 
+      - name: Setup JDK 8 for TWRP 8.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openjdk-8-jdk
+          # 强制将 Java 8 设为默认
+          sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
+          sudo update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac
+          # 导出 JAVA_HOME 确保构建系统识别
+          echo "JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64" >> $GITHUB_ENV
+          echo "PATH=/usr/lib/jvm/java-8-openjdk-amd64/bin:$PATH" >> $GITHUB_ENV
+          # 验证版本
+          java -version
+          javac -version
+
       - name: Sync TWRP Source & Build
         run: |
           mkdir -p ~/.bin
