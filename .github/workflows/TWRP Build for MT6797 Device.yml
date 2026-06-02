@@ -43,7 +43,7 @@ jobs:
           rm -f *.deb
         fi
 
-    - name: Generate Device Tree for MT6797
+        - name: Generate Device Tree for MT6797
       run: |
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p $DEVICE_PATH/recovery/root/etc
@@ -57,18 +57,10 @@ jobs:
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
 
-        # 🔥 核心修复：添加 PRODUCT_BUILD_RECOVERY 强制启用 recovery 目标
+        # 🔥 Android 8.1 TWRP 正确配置：不再使用 PRODUCT_BUILD_RECOVERY
         cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
-        # TWRP_CORE_INHERIT 将在构建步骤中被替换为实际路径
+        # 占位符，将在构建步骤中替换为实际的 TWRP 核心 mk 路径
         $(call inherit-product, TWRP_CORE_INHERIT_PLACEHOLDER)
-        $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
-        $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
-        
-        # 🔥 关键：显式声明这是一个 recovery-only 产品
-        PRODUCT_BUILD_RECOVERY := true
-        PRODUCT_BUILD_SYSTEM_IMAGE := false
-        PRODUCT_BUILD_VENDOR_IMAGE := false
-        PRODUCT_BUILD_CACHE_IMAGE := false
         
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
@@ -76,7 +68,15 @@ jobs:
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
+        
+        # Android 8.1 TWRP 必需属性
+        PRODUCT_COPY_FILES += \
+            $(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
+
+        # BoardConfig.mk 保持不变（已包含所有必要的 TW_* 和 BOARD_* 变量）
+        # recovery.fstab 保持不变
+        echo "✅ 设备树模板生成完成！"
         
         cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
@@ -176,44 +176,56 @@ jobs:
         mkdir -p device/teclast
         cp -r ../device/teclast/m20_mt6797 ./device/teclast/
         
-        # 🔥 增强探测：不仅检查文件存在，还验证内容是否包含 recovery 相关定义
+        # 🔥 针对 Android 8.1 TWRP 的精确探测
+        # 在 twrp-8.1 manifest 中，核心配置几乎总是 vendor/omni/config/common.mk
+        # 但我们同时搜索 BUILDING_RECOVERY_IMAGE 的定义位置作为双重验证
         TWRP_CORE_MK=""
-        for candidate in \
-          "vendor/omni/config/common.mk" \
-          "vendor/twrp/config/common.mk" \
-          "bootable/recovery/twrp.mk" \
-          "build/target/product/twrp.mk" \
-          "vendor/omni/config/twrp.mk"; do
-          if [ -f "$candidate" ]; then
-            # 验证文件内容是否真的与 TWRP/recovery 相关
-            if grep -qiE "(recovery|twrp|RECOVERYIMAGE)" "$candidate" 2>/dev/null; then
-              TWRP_CORE_MK="$candidate"
-              echo "✅ 找到有效的 TWRP 核心配置: $candidate"
-              echo "📋 文件前10行内容:"
-              head -10 "$candidate"
-              break
-            else
-              echo "⚠️ 文件存在但不含 recovery 定义，跳过: $candidate"
-            fi
+        
+        echo "🔍 搜索 Android 8.1 TWRP 核心配置..."
+        # 优先检查标准路径
+        if [ -f "vendor/omni/config/common.mk" ]; then
+          TWRP_CORE_MK="vendor/omni/config/common.mk"
+        elif [ -f "vendor/twrp/config/common.mk" ]; then
+          TWRP_CORE_MK="vendor/twrp/config/common.mk"
+        else
+          # 回退：搜索定义了 BUILDING_RECOVERY_IMAGE 的文件
+          FOUND=$(grep -rl "BUILDING_RECOVERY_IMAGE\s*:=" --include="*.mk" . 2>/dev/null | grep -v "./out/" | head -1 || true)
+          if [ -n "$FOUND" ]; then
+            # 从定义文件向上查找最近的 common.mk 或 twrp.mk
+            DIR=$(dirname "$FOUND")
+            while [ "$DIR" != "." ]; do
+              if [ -f "$DIR/common.mk" ]; then
+                TWRP_CORE_MK="$DIR/common.mk"
+                break
+              elif [ -f "$DIR/twrp.mk" ]; then
+                TWRP_CORE_MK="$DIR/twrp.mk"
+                break
+              fi
+              DIR=$(dirname "$DIR")
+            done
+            # 如果没找到上层 mk，直接使用定义文件本身
+            [ -z "$TWRP_CORE_MK" ] && TWRP_CORE_MK="$FOUND"
           fi
-        done
+        fi
         
         if [ -z "$TWRP_CORE_MK" ]; then
-          echo "❌ 无法找到有效的 TWRP 核心配置文件！"
-          echo "🔍 全局搜索包含 'recoveryimage' 的 mk 文件..."
-          find . -name "*.mk" -not -path "./out/*" -exec grep -l "recoveryimage" {} \; 2>/dev/null | head -20 || true
-          echo "📋 vendor/ 目录结构:"
-          find vendor/ -maxdepth 3 -type f -name "*.mk" 2>/dev/null | head -30 || true
+          echo "❌ 无法找到 TWRP 核心配置！"
+          echo "🔍 所有包含 BUILDING_RECOVERY_IMAGE 的文件:"
+          grep -rl "BUILDING_RECOVERY_IMAGE" --include="*.mk" . 2>/dev/null | grep -v "./out/" || echo "(无)"
+          echo "🔍 vendor/ 下所有 mk 文件:"
+          find vendor/ -name "*.mk" 2>/dev/null | head -30 || echo "(vendor/ 为空或不存在)"
           exit 1
         fi
         
+        echo "✅ 使用 TWRP 核心配置: $TWRP_CORE_MK"
+        echo "📋 文件内容预览:"
+        head -20 "$TWRP_CORE_MK"
+        
         sed -i "s|TWRP_CORE_INHERIT_PLACEHOLDER|$TWRP_CORE_MK|g" device/teclast/m20_mt6797/twrp_m20_mt6797.mk
-        echo "📋 最终产品 mk 内容:"
-        cat device/teclast/m20_mt6797/twrp_m20_mt6797.mk
         
         source build/envsetup.sh
         
-        echo "🔧 执行 lunch twrp_m20_mt6797-eng ..."
+        echo "🔧 执行 lunch ..."
         lunch twrp_m20_mt6797-eng > >(tee /tmp/lunch_output.txt) 2>&1
         sleep 1
         
@@ -222,18 +234,17 @@ jobs:
           cat /tmp/lunch_output.txt
           exit 1
         fi
-        echo "✅ lunch 成功！"
         
-        # 🔥 增强诊断：如果目标仍不存在，列出所有已注册的 make target
+        # 🔥 Android 8.1 专用验证：检查 BUILDING_RECOVERY_IMAGE 而非 PRODUCT_BUILD_RECOVERY
         if ! make -n recoveryimage >/dev/null 2>&1; then
           echo "❌ recoveryimage 目标仍未注册！"
-          echo "🔍 搜索所有包含 'recovery' 的已注册目标..."
-          make -qp 2>/dev/null | grep -E "^[a-zA-Z_-]*recovery[a-zA-Z_-]*:" | sort -u || true
-          echo "🔍 检查 PRODUCT_BUILD_RECOVERY 是否生效..."
-          make -qp 2>/dev/null | grep "PRODUCT_BUILD_RECOVERY" || echo "(未找到该变量)"
+          echo "🔍 BUILDING_RECOVERY_IMAGE 状态:"
+          make -qp 2>/dev/null | grep "BUILDING_RECOVERY_IMAGE" || echo "(未设置)"
+          echo "🔍 lunch 输出中的错误/警告:"
+          grep -iE "(error|warning|fail|cannot)" /tmp/lunch_output.txt | grep -v "omni.dependencies" || echo "(无)"
           exit 1
         fi
-        echo "✅ recoveryimage 目标已确认存在"
+        echo "✅ recoveryimage 目标已确认"
         
         export LZMA_RAMDISK_TARGETS=recovery
         export BOARD_USE_LZMA_COMPRESSION=true
@@ -244,15 +255,12 @@ jobs:
         if [ -f "$RECOVERY_IMG" ]; then
           SIZE=$(stat -c%s "$RECOVERY_IMG")
           MAX_SIZE=16777216
-          echo "📊 recovery.img 大小: $SIZE 字节 ($((SIZE/1024/1024)) MB)"
-          if [ $SIZE -gt $MAX_SIZE ]; then
-            echo "❌ 镜像超过 16MB 限制！超出 $(( (SIZE - MAX_SIZE) / 1024 )) KB"
-            exit 1
-          fi
-          echo "✅ 构建成功！镜像大小合规。"
+          echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
+          [ $SIZE -gt $MAX_SIZE ] && { echo "❌ 超过 16MB 限制！"; exit 1; }
+          echo "✅ 构建成功！"
         else
           echo "❌ recovery.img 未生成！"
-          ls -laR "$OUT/" | head -100 || true
+          ls -laR "$OUT/" | head -100
           exit 1
         fi
 
