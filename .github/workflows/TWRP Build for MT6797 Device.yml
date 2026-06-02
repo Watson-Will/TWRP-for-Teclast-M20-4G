@@ -69,34 +69,47 @@ jobs:
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
         find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 核心修复：直接 patch build/core/Makefile 强制启用 recovery
-        echo "=== 检查 build/core/Makefile 中 BUILDING_RECOVERY_IMAGE 的使用 ==="
-        grep -n "BUILDING_RECOVERY_IMAGE" build/core/Makefile || echo "(未在 build/core/Makefile 中找到)"
-
-        echo "=== 检查 build/make/core/Makefile ==="
-        if [ -f "build/make/core/Makefile" ]; then
-          grep -n "BUILDING_RECOVERY_IMAGE" build/make/core/Makefile || echo "(未在 build/make/core/Makefile 中找到)"
+        # 🔥 确认正确的 Makefile 路径并 patch
+        if [ -f "build/make/core/config.mk" ]; then
+          CORE_CONFIG="build/make/core/config.mk"
           CORE_MAKEFILE="build/make/core/Makefile"
         else
+          CORE_CONFIG="build/core/config.mk"
           CORE_MAKEFILE="build/core/Makefile"
         fi
 
-        # 🔥 在 Makefile 的最顶部注入 BUILDING_RECOVERY_IMAGE
-        # 这确保在任何条件判断之前变量就已设置
-        if ! grep -q "^BUILDING_RECOVERY_IMAGE" "$CORE_MAKEFILE"; then
-          echo "🔧 Patching $CORE_MAKEFILE to force BUILDING_RECOVERY_IMAGE..."
-          sed -i '1i\# TWRP Force Recovery Build\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\n' "$CORE_MAKEFILE"
-          echo "✅ Patch applied"
-          head -5 "$CORE_MAKEFILE"
-        else
-          echo "ℹ️ BUILDING_RECOVERY_IMAGE already in $CORE_MAKEFILE"
+        echo "=== recoveryimage 在 config.mk 中的上下文 ==="
+        grep -n -B5 -A5 "recoveryimage" "$CORE_CONFIG" | head -40
+
+        echo "=== BUILDING_RECOVERY_IMAGE 在 Makefile 中的使用 ==="
+        grep -n "BUILDING_RECOVERY_IMAGE" "$CORE_MAKEFILE" || echo "(未在 Makefile 中找到)"
+
+        # 🔥 在正确的 config.mk 中查找 recoveryimage 注册的条件
+        echo "=== config.mk 中 recoveryimage 附近的条件守卫 ==="
+        REC_LINE=$(grep -n "recoveryimage-nodeps" "$CORE_CONFIG" | head -1 | cut -d: -f1)
+        if [ -n "$REC_LINE" ]; then
+          START=$((REC_LINE > 30 ? REC_LINE - 30 : 1))
+          END=$((REC_LINE + 10))
+          sed -n "${START},${END}p" "$CORE_CONFIG"
         fi
 
-        # 🔥 同时确认 bootable/recovery/Android.mk 中的路径检查能通过
-        echo "=== 验证 bootable/recovery 路径匹配 ==="
-        grep -A5 "PROJECT_PATH_AGREES" bootable/recovery/Android.mk | head -20
+        # 🔥 直接 patch：在 config.mk 中 recoveryimage 注册之前强制设置变量
+        # 找到包含 recoveryimage 的条件块，在其前面注入
+        if ! grep -q "^# TWRP_FORCE_RECOVERY" "$CORE_CONFIG"; then
+          echo "🔧 Patching $CORE_CONFIG ..."
+          # 在文件顶部注入，确保全局生效
+          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\nPRODUCT_BUILD_RECOVERY := true\n' "$CORE_CONFIG"
+          echo "✅ Patch applied to $CORE_CONFIG"
+          head -8 "$CORE_CONFIG"
+        fi
 
-        # 生成设备树（简化版，不再需要手动设置 BUILDING_RECOVERY_IMAGE）
+        # 同时 patch Makefile 作为双重保险
+        if [ -f "$CORE_MAKEFILE" ] && ! grep -q "^# TWRP_FORCE_RECOVERY" "$CORE_MAKEFILE"; then
+          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\n' "$CORE_MAKEFILE"
+          echo "✅ Also patched $CORE_MAKEFILE"
+        fi
+
+        # 生成设备树
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p "$DEVICE_PATH/recovery/root/etc"
         [ ! -f "../boot.img" ] && { echo "❌ 缺少 boot.img"; exit 1; }
@@ -105,7 +118,7 @@ jobs:
         cat > "$DEVICE_PATH/AndroidProducts.mk" << 'EOF'
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
-        
+
         cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << 'EOF'
         $(call inherit-product, vendor/omni/config/common.mk)
         
@@ -119,7 +132,7 @@ jobs:
         PRODUCT_COPY_FILES += \
             $(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
-        
+
         cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
@@ -171,7 +184,7 @@ jobs:
         TW_USE_MINIMAL_BUSYBOX := true
         TW_USE_TOOLBOX := true
         EOF
-        
+
         cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
         /boot emmc /dev/block/by-name/boot flags=backup=1
         /recovery emmc /dev/block/by-name/recovery flags=backup=1
@@ -189,18 +202,20 @@ jobs:
 
         [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ] && { echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1; }
 
-        # 🔥 验证 patch 是否生效
         echo "=== 验证 BUILDING_RECOVERY_IMAGE ==="
         make -qp 2>/dev/null | grep "BUILDING_RECOVERY_IMAGE" || echo "(仍未设置!)"
 
         if ! make -n recoveryimage >/dev/null 2>&1; then
           echo "❌ recoveryimage 仍未注册！"
-          echo "=== Makefile patch 内容 ==="
-          head -10 "$CORE_MAKEFILE"
-          echo "=== 搜索所有包含 recoveryimage 的行 ==="
-          grep -rn "recoveryimage" build/core/ build/make/core/ 2>/dev/null | grep -v ".pyc" | head -20
-          echo "=== bootable/recovery/Android.mk 完整前60行 ==="
-          head -60 bootable/recovery/Android.mk
+          echo "=== Patch 后的 config.mk 前10行 ==="
+          head -10 "$CORE_CONFIG"
+          echo "=== recoveryimage 完整条件块 ==="
+          REC_LINE=$(grep -n "recoveryimage" "$CORE_CONFIG" | head -1 | cut -d: -f1)
+          START=$((REC_LINE > 50 ? REC_LINE - 50 : 1))
+          END=$((REC_LINE + 20))
+          sed -n "${START},${END}p" "$CORE_CONFIG"
+          echo "=== make -qp 中所有 PHONY 目标 ==="
+          make -qp 2>/dev/null | grep "^\.PHONY:" | tr ' ' '\n' | grep -i recov || echo "(无 recovery 相关 PHONY)"
           exit 1
         fi
 
