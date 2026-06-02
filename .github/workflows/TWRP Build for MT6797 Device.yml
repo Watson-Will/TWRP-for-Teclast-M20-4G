@@ -67,7 +67,6 @@ jobs:
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
-        # 🔥 关键：显式声明 recovery 模块
         PRODUCT_PACKAGES += \
             recovery \
             twrp
@@ -159,7 +158,7 @@ jobs:
         repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-8.1 --depth=1
         repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
         
-        # 🔥 安全清理：只删确定不影响构建系统的冗余内容
+        # 🔥 修复：拆分 find 命令，避免 -prune 与 -delete 冲突
         echo "🧹 开始安全清理..."
         rm -rf frameworks/ml
         rm -rf external/chromium-webview
@@ -168,10 +167,10 @@ jobs:
         rm -rf device/generic/goldfish
         rm -rf vendor/qcom/opensource/dataservices
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
-        # ⚠️ 不再删除 packages/apps/*，避免破坏构建依赖
-        # 改为删除已编译的 APK/ODEX 残留
-        find . -path ./out -prune -o -name "*.apk" -type f -delete
-        find . -path ./out -prune -o -name "*.odex" -type f -delete
+        
+        # 单独删除 .apk 和 .odex，显式排除 out 目录
+        find . -path ./out -prune -o -type f -name "*.apk" -print | xargs -r rm -f
+        find . -path ./out -prune -o -type f -name "*.odex" -print | xargs -r rm -f
         echo "✅ 安全清理完成！"
         
         mkdir -p device/teclast
@@ -180,7 +179,6 @@ jobs:
         source build/envsetup.sh
         lunch twrp_m20_mt6797-eng
         
-        # 🔥 验证 lunch 是否成功识别设备
         if [ -z "$OUT" ]; then
           echo "❌ lunch 失败：未设置 OUT 环境变量"; exit 1
         fi
@@ -189,11 +187,9 @@ jobs:
         export LZMA_RAMDISK_TARGETS=recovery
         export BOARD_USE_LZMA_COMPRESSION=true
         
-        # 🔥 强制重新生成构建规则，避免 "no work to do"
         make clean-recoveryimage || true
         make -j$(nproc) recoveryimage SHOW_COMMANDS=1
 
-        # 🔥 使用 $OUT 动态定位 recovery.img
         RECOVERY_IMG="$OUT/recovery.img"
         if [ -f "$RECOVERY_IMG" ]; then
           SIZE=$(stat -c%s "$RECOVERY_IMG")
