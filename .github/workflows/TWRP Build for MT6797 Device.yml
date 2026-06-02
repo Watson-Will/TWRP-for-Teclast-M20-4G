@@ -136,18 +136,37 @@ jobs:
           TW_MAX_BRIGHTNESS := 255
           TW_DEFAULT_BRIGHTNESS := 120
           TW_USE_TOOLBOX := true
-          TW_INCLUDE_CRYPTO := true
           TW_SCREEN_BLANK_ON_BOOT := true
 
-          # 🔽 TWRP 瘦身配置（解决镜像过大问题）🔽
+          # 🔽 极限瘦身配置（适配 16MB 分区）🔽
+          # 1. 启用 LZMA 压缩 ramdisk（可节省 2-5MB）
           LZMA_RAMDISK_TARGETS := recovery
+
+          # 2. 移除所有非必要文件系统和加密支持
           TW_EXCLUDE_NTFS_3G := true
           TW_EXCLUDE_FUSE_EXFAT := true
+          TW_NO_EXFAT_FUSE := true
           TW_EXCLUDE_SUPERSU := true
           TW_EXCLUDE_TWRPAPP := true
-          TW_NO_EXFAT_FUSE := true
+          TW_EXCLUDE_CRYPTO := true
+          TW_EXCLUDE_ENCRYPTED_BACKUPS := true
+
+          # 3. 移除所有多余功能与 MTP
+          TW_EXCLUDE_MTP := true
+          TW_NO_USB_STORAGE := true
+          TW_NO_SCREEN_TIMEOUT := true
+          TW_NO_CPU_TEMP := true
+          TW_EXCLUDE_HAPTICS := true
+          TW_EXCLUDE_BATTERY_PERCENT := true
+
+          # 4. 语言和界面精简（仅保留英文）
           TW_EXTRA_LANGUAGES := false
-          TW_DEFAULT_LANGUAGE := zh_CN
+          TW_DEFAULT_LANGUAGE := en
+
+          # 5. 启用底层编译器极限优化（进一步压缩体积）
+          TARGET_GLOBAL_CFLAGS += -Oz -ffunction-sections -fdata-sections
+          TARGET_GLOBAL_CPPFLAGS += -Oz -ffunction-sections -fdata-sections
+          TARGET_GLOBAL_LDFLAGS += -Wl,--gc-sections -Wl,--strip-all
           EOF
           cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
           /boot           emmc    /dev/block/by-name/boot           flags=backup=1
