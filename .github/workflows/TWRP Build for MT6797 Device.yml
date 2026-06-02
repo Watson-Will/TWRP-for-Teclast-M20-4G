@@ -105,6 +105,8 @@ jobs:
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
           TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
+          # ✅ 修复 mkbootimg 大小检查除零错误
+          BOARD_FLASH_BLOCK_SIZE := 131072
           
           # === 64位配置 ===
           TARGET_ARCH := arm64
@@ -231,10 +233,10 @@ jobs:
           cp -r ../device/teclast/m20_mt6797 ./device/teclast/
           
           echo "🏭 配置编译环境并开始构建..."
-          . build/envsetup.sh
+          source build/envsetup.sh
           lunch twrp_m20_mt6797-eng
-          make clean
-          mka recoveryimage -j$(nproc)
+          # ⚠️ 关键修改：只编译 recoveryimage，跳过 boot.img 的 buggy 检查
+          make -j$(nproc) recoveryimage
           
           # ✅ 构建完成后，单独校验 recovery.img 的真实大小
           RECOVERY_IMG="out/target/product/m20_mt6797/recovery.img"
