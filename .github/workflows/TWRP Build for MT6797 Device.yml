@@ -53,9 +53,9 @@ jobs:
         fi
         cp boot.img $DEVICE_PATH/prebuilt_boot.img
 
+        # 🔥 移除 COMMON_LUNCH_CHOICES，仅保留 PRODUCT_MAKEFILES
         cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
-        COMMON_LUNCH_CHOICES := twrp_m20_mt6797-eng
         EOF
 
         cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
@@ -67,150 +67,10 @@ jobs:
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
-        PRODUCT_PACKAGES += \
-            recovery \
-            twrp
+        PRODUCT_PACKAGES += recovery twrp
         EOF
 
         cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
-        TARGET_NO_KERNEL := true
-        TARGET_ARCH := arm64
-        TARGET_ARCH_VARIANT := armv8-a
-        TARGET_CPU_ABI := arm64-v8a
-        TARGET_2ND_ARCH := arm
-        TARGET_2ND_ARCH_VARIANT := armv7-a-neon
-        TARGET_2ND_CPU_ABI := armeabi-v7a
-        TARGET_BOARD_PLATFORM := mt6797
-        TARGET_BOOTLOADER_BOARD_NAME := mt6797
-        TARGET_NO_BOOTLOADER := true
-        BOARD_KERNEL_CMDLINE := bootopt=64S3,32N2,64N2 buildvariant=eng
-        BOARD_KERNEL_BASE := 0x40078000
-        BOARD_KERNEL_PAGESIZE := 2048
-        BOARD_KERNEL_OFFSET := 0x00008000
-        BOARD_RAMDISK_OFFSET := 0x11a88000
-        BOARD_KERNEL_TAGS_OFFSET := 0x07808000
-        BOARD_MKBOOTIMG_ARGS := --kernel_offset $(BOARD_KERNEL_OFFSET) --ramdisk_offset $(BOARD_RAMDISK_OFFSET) --tags_offset $(BOARD_KERNEL_TAGS_OFFSET)
-        LZMA_RAMDISK_TARGETS := recovery
-        BOARD_USE_LZMA_COMPRESSION := true
-        WITH_DEXPREOPT := false
-        TARGET_STRIP_MODULE_USE := true
-        TW_EXCLUDE_ADB := true
-        TW_EXCLUDE_TWRPAPP := true
-        TW_EXCLUDE_NANO := true
-        TW_EXCLUDE_BASH := true
-        TW_EXCLUDE_PYTHON := true
-        TW_EXCLUDE_MTP := true
-        TW_EXCLUDE_SUPERSU := true
-        TW_EXCLUDE_CRYPTO := true
-        TW_EXCLUDE_ENCRYPTED_BACKUPS := true
-        TW_EXCLUDE_HAPTICS := true
-        TW_NO_SCREEN_TIMEOUT := true
-        TW_NO_BATT_PERCENT := true
-        TW_NO_CPU_TEMP := true
-        TW_USE_MINIMAL_BUSYBOX := true
-        TW_USE_TOOLBOX := true
-        BOARD_FLASH_BLOCK_SIZE := 131072
-        BOARD_BOOTIMAGE_PARTITION_SIZE := 33554432
-        BOARD_RECOVERYIMAGE_PARTITION_SIZE := 16777216
-        BOARD_HAS_LARGE_FILESYSTEM := true
-        TW_THEME := landscape_hdpi
-        TARGET_SCREEN_WIDTH := 2560
-        TARGET_SCREEN_HEIGHT := 1600
-        TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
-        TW_MAX_BRIGHTNESS := 255
-        TW_DEFAULT_BRIGHTNESS := 120
-        RECOVERY_SDCARD_ON_DATA := true
-        TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
-        EOF
-
-        cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
-        /boot emmc /dev/block/by-name/boot flags=backup=1
-        /recovery emmc /dev/block/by-name/recovery flags=backup=1
-        /system ext4 /dev/block/by-name/system flags=backup=8
-        /vendor ext4 /dev/block/by-name/vendor flags=backup=8
-        /data f2fs /dev/block/by-name/userdata flags=backup=1,encryptable=footer
-        /cache ext4 /dev/block/by-name/cache flags=backup=8
-        /sdcard vfat /dev/block/mmcblk1p1 flags=display="Micro SDcard";storage;wipeingui;removable
-        /usb-otg auto /dev/block/sda1 flags=display="USB-OTG";storage;wipeingui;removable
-        EOF
-        echo "✅ 设备树生成完成！"
-
-    - name: Setup JDK 8
-      run: |
-        sudo apt-get install -y openjdk-8-jdk
-        sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
-        sudo update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac
-        echo "JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64" >> $GITHUB_ENV
-
-    - name: Prepare LZMA Tools and Swap
-      run: |
-        sudo apt-get install -y xz-utils lzma
-        sudo fallocate -l 4G /swapfile
-        sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-        free -h
-
-    - name: Sync Source & Safe Cleanup & Build
-      run: |
-        mkdir -p twrp_build && cd twrp_build
-        
-        repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-8.1 --depth=1
-        repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
-        
-        # 🔥 修复：拆分 find 命令，避免 -prune 与 -delete 冲突
-        echo "🧹 开始安全清理..."
-        rm -rf frameworks/ml
-        rm -rf external/chromium-webview
-        rm -rf external/ant-wireless
-        rm -rf device/qcom/*
-        rm -rf device/generic/goldfish
-        rm -rf vendor/qcom/opensource/dataservices
-        rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
-        
-        # 单独删除 .apk 和 .odex，显式排除 out 目录
-        find . -path ./out -prune -o -type f -name "*.apk" -print | xargs -r rm -f
-        find . -path ./out -prune -o -type f -name "*.odex" -print | xargs -r rm -f
-        echo "✅ 安全清理完成！"
-        
-        mkdir -p device/teclast
-        cp -r ../device/teclast/m20_mt6797 ./device/teclast/
-        
-        source build/envsetup.sh
-        lunch twrp_m20_mt6797-eng
-        
-        if [ -z "$OUT" ]; then
-          echo "❌ lunch 失败：未设置 OUT 环境变量"; exit 1
-        fi
-        echo "📂 输出目录: $OUT"
-        
-        export LZMA_RAMDISK_TARGETS=recovery
-        export BOARD_USE_LZMA_COMPRESSION=true
-        
-        make clean-recoveryimage || true
-        make -j$(nproc) recoveryimage SHOW_COMMANDS=1
-
-        RECOVERY_IMG="$OUT/recovery.img"
-        if [ -f "$RECOVERY_IMG" ]; then
-          SIZE=$(stat -c%s "$RECOVERY_IMG")
-          MAX_SIZE=16777216
-          echo "📊 recovery.img 大小: $SIZE 字节 ($((SIZE/1024/1024)) MB)"
-          if [ $SIZE -gt $MAX_SIZE ]; then
-            echo "❌ 错误：镜像超过 16MB 限制！当前超出 $(( (SIZE - MAX_SIZE) / 1024 )) KB"
-            exit 1
-          else
-            echo "✅ 构建成功！镜像大小合规。"
-          fi
-        else
-          echo "❌ 错误：recovery.img 未在 $OUT 中生成！"
-          echo "📋 OUT 目录内容:"
-          ls -la "$OUT/" || echo "OUT 目录不存在"
-          exit 1
-        fi
-
-    - name: Upload TWRP Recovery Image
-      uses: actions/upload-artifact@v4
-      with:
-        name: TWRP-Recovery-m20_mt6797
-        path: twrp_build/out/target/product/m20_mt6797/recovery.img
-        if-no-files-found: error
+        T
