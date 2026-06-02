@@ -67,35 +67,87 @@ jobs:
         rm -rf frameworks/ml external/chromium-webview external/ant-wireless
         rm -rf device/qcom/* device/generic/goldfish vendor/qcom/opensource/dataservices
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
-        find . -path ./out -prune -o -type f -name "*.apk" -print | xargs -r rm -f
-        find . -path ./out -prune -o -type f -name "*.odex" -print | xargs -r rm -f
+        find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 第一步：确认文件物理存在并打印绝对路径
-        if [ ! -f "vendor/omni/config/common.mk" ]; then
-          echo "❌ vendor/omni/config/common.mk 不存在！"
-          find vendor/ -maxdepth 4 -name "*.mk" 2>/dev/null | head -30 || echo "(vendor/ 为空)"
+        # 🔥 关键：确认实际平台版本和构建系统类型
+        echo "=== 平台版本确认 ==="
+        grep -r "PLATFORM_VERSION\b" build/core/version_defaults.mk 2>/dev/null | head -5 || true
+        cat build/make/core/version_defaults.mk 2>/dev/null | grep "PLATFORM_VERSION" | head -5 || true
+
+        # 🔥 搜索真正注册 recoveryimage 目标的位置
+        echo "=== 搜索 recoveryimage 目标定义 ==="
+        grep -rn "recoveryimage" build/make/core/Makefile 2>/dev/null | head -10 || \
+        grep -rn "recoveryimage" build/core/Makefile 2>/dev/null | head -10 || \
+        echo "(未在 Makefile 中找到)"
+
+        echo "=== 搜索 PRODUCT_BUILD_RECOVERY 的消费位置 ==="
+        grep -rn "PRODUCT_BUILD_RECOVERY" build/make/ build/core/ 2>/dev/null | head -10 || echo "(未找到)"
+
+        echo "=== 搜索所有包含 'recovery' 的产品配置入口 ==="
+        find vendor/omni vendor/twrp bootable/recovery -maxdepth 3 -name "*.mk" -exec grep -l -iE "recovery|twrp" {} \; 2>/dev/null | head -20
+
+        # 🔥 查找真正的 TWRP 产品继承入口
+        TWRP_ENTRY=""
+        for candidate in \
+          "vendor/omni/config/common.mk" \
+          "vendor/twrp/config/common.mk" \
+          "bootable/recovery/twrp.mk" \
+          "vendor/omni/config/twrp.mk" \
+          "device/generic/twrp/twrp.mk"; do
+          if [ -f "$candidate" ]; then
+            # 检查是否包含 recovery 相关的实质内容（不只是注释）
+            if grep -qE "^[^#]*(RECOVERY|recoveryimage|PRODUCT_PACKAGES.*recovery|inherit.*recovery)" "$candidate" 2>/dev/null; then
+              TWRP_ENTRY="$candidate"
+              echo "✅ 候选入口: $candidate"
+              head -30 "$candidate"
+              echo "---"
+            fi
+          fi
+        done
+
+        # 如果上面没找到，全局搜索设置了 RECOVERY_VARIANT 或包含 twrp recovery 包的文件
+        if [ -z "$TWRP_ENTRY" ]; then
+          echo "⚠️ 标准路径未找到有效入口，全局搜索..."
+          FOUND=$(grep -rlE "RECOVERY_VARIANT|PRODUCT_PACKAGES.*\+=.*twrp|LOCAL_MODULE\s*:=\s*twrp" --include="*.mk" . 2>/dev/null | grep -v "./out/" | head -5)
+          echo "搜索结果: $FOUND"
+          for f in $FOUND; do
+            echo "=== $f ==="
+            head -30 "$f"
+            echo "---"
+          done
+          # 取第一个作为入口
+          TWRP_ENTRY=$(echo "$FOUND" | head -1)
+        fi
+
+        if [ -z "$TWRP_ENTRY" ]; then
+          echo "❌ 完全无法找到 TWRP 构建入口！"
+          echo "=== vendor/ 完整结构 ==="
+          find vendor/ -maxdepth 4 -type f -name "*.mk" 2>/dev/null
+          echo "=== bootable/recovery/ 结构 ==="
+          find bootable/recovery/ -maxdepth 2 -type f \( -name "*.mk" -o -name "*.bp" \) 2>/dev/null
           exit 1
         fi
-        echo "✅ 文件存在: $(pwd)/vendor/omni/config/common.mk"
-        echo "📋 文件前20行:"
-        head -20 vendor/omni/config/common.mk
 
-        # 🔥 第二步：生成设备树（完全硬编码路径，零变量）
+        echo "🎯 最终选定入口: $TWRP_ENTRY"
+
+        # 生成设备树
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p "$DEVICE_PATH/recovery/root/etc"
-
-        if [ ! -f "../boot.img" ]; then
-          echo "❌ 请在仓库根目录放入 boot.img"; exit 1
-        fi
+        [ ! -f "../boot.img" ] && { echo "❌ 缺少 boot.img"; exit 1; }
         cp ../boot.img "$DEVICE_PATH/prebuilt_boot.img"
 
         cat > "$DEVICE_PATH/AndroidProducts.mk" << 'EOF'
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
         
-                # 🔥 关键：不使用任何 shell 变量，直接写死相对路径
-                cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << 'EOF'
-        $(call inherit-product, vendor/omni/config/common.mk)
+        # 🔥 使用找到的真实入口，并强制启用 recovery
+        cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << EOF
+        \$(call inherit-product, $TWRP_ENTRY)
+        
+        # 强制声明（兼容新旧构建系统）
+        PRODUCT_BUILD_RECOVERY := true
+        PRODUCT_BUILD_SYSTEM_IMAGE := false
+        PRODUCT_BUILD_VENDOR_IMAGE := false
         
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
@@ -104,11 +156,12 @@ jobs:
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
         
-        PRODUCT_COPY_FILES += \
-            $(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
+        PRODUCT_COPY_FILES += \\
+            \$(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
         
-                cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
+        # BoardConfig.mk 和 recovery.fstab 保持之前的内容不变...
+        cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
         TARGET_NO_KERNEL := true
@@ -160,7 +213,7 @@ jobs:
         TW_USE_TOOLBOX := true
         EOF
         
-                cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
+        cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
         /boot emmc /dev/block/by-name/boot flags=backup=1
         /recovery emmc /dev/block/by-name/recovery flags=backup=1
         /system ext4 /dev/block/by-name/system flags=backup=8
@@ -171,57 +224,34 @@ jobs:
         /usb-otg auto /dev/block/sda1 flags=display="USB-OTG";storage;wipeingui;removable
         EOF
 
-        # 🔥 第三步：验证写入的文件内容是否正确
-        echo "📋 验证写入的产品 mk:"
+        echo "📋 最终产品 mk:"
         cat "$DEVICE_PATH/twrp_m20_mt6797.mk"
-        echo "---"
-        # 确认第一行确实是 inherit-product 且路径正确
-        FIRST_LINE=$(head -1 "$DEVICE_PATH/twrp_m20_mt6797.mk")
-        if [[ "$FIRST_LINE" != *"vendor/omni/config/common.mk"* ]]; then
-          echo "❌ 产品 mk 第一行内容异常: $FIRST_LINE"
-          exit 1
-        fi
-        echo "✅ 产品 mk 内容验证通过"
 
         source build/envsetup.sh
-
-        echo "🔧 lunch ..."
         lunch twrp_m20_mt6797-eng > >(tee /tmp/lunch_output.txt) 2>&1
         sleep 1
 
-        if [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ]; then
-          echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1
-        fi
+        [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ] && { echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1; }
 
-        # 🔥 第四步：如果仍失败，检查 common.mk 内部是否有条件跳过
         if ! make -n recoveryimage >/dev/null 2>&1; then
           echo "❌ recoveryimage 仍未注册！"
-          echo "=== 检查 common.mk 内部条件守卫 ==="
-          grep -n -E "ifeq|ifneq|ifdef|ifndef|BUILDING_RECOVERY|RECOVERY_VARIANT|include.*recovery" vendor/omni/config/common.mk || echo "(无条件语句)"
-          echo "=== 搜索整个 vendor/omni 中设置 BUILDING_RECOVERY_IMAGE 的位置 ==="
-          grep -rn "BUILDING_RECOVERY_IMAGE" vendor/omni/ 2>/dev/null || echo "(未在 vendor/omni 中找到)"
-          echo "=== 搜索整个 build/core 中检查 BUILDING_RECOVERY_IMAGE 的位置 ==="
-          grep -rn "BUILDING_RECOVERY_IMAGE" build/core/ 2>/dev/null | head -10 || echo "(未在 build/core 中找到)"
-          echo "=== lunch 完整输出最后50行 ==="
-          tail -50 /tmp/lunch_output.txt
+          echo "=== 所有已注册的 recovery 相关目标 ==="
+          make -qp 2>/dev/null | grep -E "^[a-zA-Z_-]*[Rr]ecovery[a-zA-Z_-]*:" | sort -u || echo "(无)"
+          echo "=== PRODUCT_BUILD_RECOVERY 状态 ==="
+          make -qp 2>/dev/null | grep "PRODUCT_BUILD_RECOVERY" || echo "(未设置)"
           exit 1
         fi
 
-        echo "✅ recoveryimage 目标已确认"
-        export LZMA_RAMDISK_TARGETS=recovery
-        export BOARD_USE_LZMA_COMPRESSION=true
+        echo "✅ recoveryimage 已注册"
+        export LZMA_RAMDISK_TARGETS=recovery BOARD_USE_LZMA_COMPRESSION=true
         make -j$(nproc) recoveryimage SHOW_COMMANDS=1
 
         RECOVERY_IMG="$OUT/recovery.img"
-        if [ -f "$RECOVERY_IMG" ]; then
-          SIZE=$(stat -c%s "$RECOVERY_IMG")
-          MAX_SIZE=16777216
-          echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
-          [ $SIZE -gt $MAX_SIZE ] && { echo "❌ 超过 16MB"; exit 1; }
-          echo "✅ 构建成功！"
-        else
-          echo "❌ recovery.img 未生成"; ls -laR "$OUT/" | head -100; exit 1
-        fi
+        [ ! -f "$RECOVERY_IMG" ] && { echo "❌ recovery.img 未生成"; ls -laR "$OUT/" | head -100; exit 1; }
+        SIZE=$(stat -c%s "$RECOVERY_IMG")
+        echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
+        [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB"; exit 1; }
+        echo "✅ 构建成功！"
 
     - name: Upload TWRP Recovery Image
       uses: actions/upload-artifact@v4
