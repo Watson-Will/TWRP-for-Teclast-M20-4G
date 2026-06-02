@@ -69,68 +69,56 @@ jobs:
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
         find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 关键：确认实际平台版本和构建系统类型
-        echo "=== 平台版本确认 ==="
-        grep -r "PLATFORM_VERSION\b" build/core/version_defaults.mk 2>/dev/null | head -5 || true
-        cat build/make/core/version_defaults.mk 2>/dev/null | grep "PLATFORM_VERSION" | head -5 || true
+        # 🔥 第一步：精确搜索 recoveryimage 目标的真正注册位置
+        echo "=== 搜索 recoveryimage phony target 定义 ==="
+        RECOVERY_TARGET_FILE=$(grep -rlE "^\.PHONY:.*recoveryimage|^recoveryimage:" build/ 2>/dev/null | grep -v "./out/" | head -1 || true)
+        echo "目标定义文件: ${RECOVERY_TARGET_FILE:-未找到}"
 
-        # 🔥 搜索真正注册 recoveryimage 目标的位置
-        echo "=== 搜索 recoveryimage 目标定义 ==="
-        grep -rn "recoveryimage" build/make/core/Makefile 2>/dev/null | head -10 || \
-        grep -rn "recoveryimage" build/core/Makefile 2>/dev/null | head -10 || \
-        echo "(未在 Makefile 中找到)"
+        echo "=== 搜索 BUILDING_RECOVERY_IMAGE 赋值位置 ==="
+        BUILDING_REC_FILE=$(grep -rlE "BUILDING_RECOVERY_IMAGE\s*[:?+]?=" . 2>/dev/null | grep -v "./out/" | head -1 || true)
+        echo "变量赋值文件: ${BUILDING_REC_FILE:-未找到}"
 
-        echo "=== 搜索 PRODUCT_BUILD_RECOVERY 的消费位置 ==="
-        grep -rn "PRODUCT_BUILD_RECOVERY" build/make/ build/core/ 2>/dev/null | head -10 || echo "(未找到)"
-
-        echo "=== 搜索所有包含 'recovery' 的产品配置入口 ==="
-        find vendor/omni vendor/twrp bootable/recovery -maxdepth 3 -name "*.mk" -exec grep -l -iE "recovery|twrp" {} \; 2>/dev/null | head -20
-
-        # 🔥 查找真正的 TWRP 产品继承入口
-        TWRP_ENTRY=""
-        for candidate in \
-          "vendor/omni/config/common.mk" \
-          "vendor/twrp/config/common.mk" \
-          "bootable/recovery/twrp.mk" \
-          "vendor/omni/config/twrp.mk" \
-          "device/generic/twrp/twrp.mk"; do
-          if [ -f "$candidate" ]; then
-            # 检查是否包含 recovery 相关的实质内容（不只是注释）
-            if grep -qE "^[^#]*(RECOVERY|recoveryimage|PRODUCT_PACKAGES.*recovery|inherit.*recovery)" "$candidate" 2>/dev/null; then
-              TWRP_ENTRY="$candidate"
-              echo "✅ 候选入口: $candidate"
-              head -30 "$candidate"
-              echo "---"
-            fi
+        echo "=== 搜索所有 twrp/recovery 专用 mk 入口 ==="
+        find vendor/omni bootable/recovery -maxdepth 3 -name "*.mk" 2>/dev/null | while read f; do
+          if grep -qE "BUILDING_RECOVERY|recoveryimage|LOCAL_MODULE.*twrp|RECOVERY_VARIANT" "$f" 2>/dev/null; then
+            echo "🎯 有效入口: $f"
+            head -20 "$f"
+            echo "---"
           fi
         done
 
-        # 如果上面没找到，全局搜索设置了 RECOVERY_VARIANT 或包含 twrp recovery 包的文件
+        # 🔥 第二步：确定正确的继承路径
+        # 优先级：BUILDING_RECOVERY_IMAGE 所在文件 > recoveryimage 目标所在文件 > 标准候选
+        TWRP_ENTRY=""
+        if [ -n "$BUILDING_REC_FILE" ]; then
+          # 如果赋值在 Android.mk 中，需要找调用它的上层 mk
+          if [[ "$BUILDING_REC_FILE" == *.mk ]]; then
+            TWRP_ENTRY="$BUILDING_REC_FILE"
+          else
+            # Android.mk 中的赋值需要被 include，搜索哪个 mk include 了它
+            DIR=$(dirname "$BUILDING_REC_FILE")
+            TWRP_ENTRY=$(grep -rl "include.*$(basename "$BUILDING_REC_FILE")" --include="*.mk" . 2>/dev/null | grep -v "./out/" | head -1 || true)
+          fi
+        fi
+
+        # 回退到标准候选列表
         if [ -z "$TWRP_ENTRY" ]; then
-          echo "⚠️ 标准路径未找到有效入口，全局搜索..."
-          FOUND=$(grep -rlE "RECOVERY_VARIANT|PRODUCT_PACKAGES.*\+=.*twrp|LOCAL_MODULE\s*:=\s*twrp" --include="*.mk" . 2>/dev/null | grep -v "./out/" | head -5)
-          echo "搜索结果: $FOUND"
-          for f in $FOUND; do
-            echo "=== $f ==="
-            head -30 "$f"
-            echo "---"
+          for c in vendor/omni/config/twrp_vars.mk vendor/omni/config/recovery.mk bootable/recovery/twrp.mk; do
+            [ -f "$c" ] && { TWRP_ENTRY="$c"; break; }
           done
-          # 取第一个作为入口
-          TWRP_ENTRY=$(echo "$FOUND" | head -1)
         fi
 
+        # 最终回退：直接用 common.mk 但手动设置 BUILDING_RECOVERY_IMAGE
+        MANUAL_BUILDING_RECOVERY=false
         if [ -z "$TWRP_ENTRY" ]; then
-          echo "❌ 完全无法找到 TWRP 构建入口！"
-          echo "=== vendor/ 完整结构 ==="
-          find vendor/ -maxdepth 4 -type f -name "*.mk" 2>/dev/null
-          echo "=== bootable/recovery/ 结构 ==="
-          find bootable/recovery/ -maxdepth 2 -type f \( -name "*.mk" -o -name "*.bp" \) 2>/dev/null
-          exit 1
+          echo "⚠️ 未找到专用入口，将使用 common.mk + 手动设置 BUILDING_RECOVERY_IMAGE"
+          TWRP_ENTRY="vendor/omni/config/common.mk"
+          MANUAL_BUILDING_RECOVERY=true
         fi
 
-        echo "🎯 最终选定入口: $TWRP_ENTRY"
+        echo "🎯 最终入口: $TWRP_ENTRY (手动模式: $MANUAL_BUILDING_RECOVERY)"
 
-        # 生成设备树
+        # 🔥 第三步：生成设备树
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p "$DEVICE_PATH/recovery/root/etc"
         [ ! -f "../boot.img" ] && { echo "❌ 缺少 boot.img"; exit 1; }
@@ -140,14 +128,14 @@ jobs:
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
         
-        # 🔥 使用找到的真实入口，并强制启用 recovery
-        cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << EOF
+                if [ "$MANUAL_BUILDING_RECOVERY" = true ]; then
+                  cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << EOF
         \$(call inherit-product, $TWRP_ENTRY)
         
-        # 强制声明（兼容新旧构建系统）
+        # 🔥 手动强制启用 recovery 构建（manifest 缺失自动注册时的兜底方案）
+        BUILDING_RECOVERY_IMAGE := true
+        RECOVERY_VARIANT := twrp
         PRODUCT_BUILD_RECOVERY := true
-        PRODUCT_BUILD_SYSTEM_IMAGE := false
-        PRODUCT_BUILD_VENDOR_IMAGE := false
         
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
@@ -155,12 +143,25 @@ jobs:
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
-        
         PRODUCT_COPY_FILES += \\
             \$(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
+                else
+                  cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << EOF
+        \$(call inherit-product, $TWRP_ENTRY)
         
-        # BoardConfig.mk 和 recovery.fstab 保持之前的内容不变...
+        PRODUCT_DEVICE := m20_mt6797
+        PRODUCT_NAME := twrp_m20_mt6797
+        PRODUCT_BRAND := Teclast
+        PRODUCT_MODEL := Teclast M20 4G
+        PRODUCT_MANUFACTURER := Teclast
+        ALLOW_MISSING_DEPENDENCIES := true
+        PRODUCT_COPY_FILES += \\
+            \$(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
+        EOF
+                fi
+
+        # BoardConfig.mk 和 recovery.fstab 保持不变（内容与上一轮相同）
         cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
@@ -213,7 +214,7 @@ jobs:
         TW_USE_TOOLBOX := true
         EOF
         
-        cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
+                cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
         /boot emmc /dev/block/by-name/boot flags=backup=1
         /recovery emmc /dev/block/by-name/recovery flags=backup=1
         /system ext4 /dev/block/by-name/system flags=backup=8
@@ -235,10 +236,12 @@ jobs:
 
         if ! make -n recoveryimage >/dev/null 2>&1; then
           echo "❌ recoveryimage 仍未注册！"
-          echo "=== 所有已注册的 recovery 相关目标 ==="
-          make -qp 2>/dev/null | grep -E "^[a-zA-Z_-]*[Rr]ecovery[a-zA-Z_-]*:" | sort -u || echo "(无)"
-          echo "=== PRODUCT_BUILD_RECOVERY 状态 ==="
-          make -qp 2>/dev/null | grep "PRODUCT_BUILD_RECOVERY" || echo "(未设置)"
+          echo "=== BUILDING_RECOVERY_IMAGE 当前值 ==="
+          make -qp 2>/dev/null | grep "BUILDING_RECOVERY_IMAGE" || echo "(未设置)"
+          echo "=== 所有已注册目标中含 recovery 的 ==="
+          make -qp 2>/dev/null | grep -E "^[a-zA-Z0-9_/.-]*[Rr]ecovery[a-zA-Z0-9_/.-]*:" | sort -u || echo "(无)"
+          echo "=== bootable/recovery/Android.mk 是否存在 ==="
+          [ -f "bootable/recovery/Android.mk" ] && echo "存在" && head -30 bootable/recovery/Android.mk || echo "不存在"
           exit 1
         fi
 
