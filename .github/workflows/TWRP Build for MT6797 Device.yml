@@ -58,7 +58,6 @@ jobs:
     - name: Sync Source & Generate Device Tree & Build
       run: |
         set -e
-
         mkdir -p twrp_build && cd twrp_build
 
         repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-8.1 --depth=1
@@ -71,33 +70,17 @@ jobs:
         find . -path ./out -prune -o -type f -name "*.apk" -print | xargs -r rm -f
         find . -path ./out -prune -o -type f -name "*.odex" -print | xargs -r rm -f
 
-        # 🔥 关键诊断：确认 TWRP 核心 mk 存在且内容正确
-        TWRP_CORE_MK=""
-        for f in vendor/omni/config/common.mk vendor/twrp/config/common.mk; do
-          if [ -f "$f" ]; then
-            TWRP_CORE_MK="$f"
-            break
-          fi
-        done
-
-        if [ -z "$TWRP_CORE_MK" ]; then
-          echo "❌ TWRP 核心 mk 不存在！"
-          echo "📋 vendor/ 目录:"
-          find vendor/ -maxdepth 4 -type f -name "*.mk" 2>/dev/null || echo "(空)"
+        # 🔥 第一步：确认文件物理存在并打印绝对路径
+        if [ ! -f "vendor/omni/config/common.mk" ]; then
+          echo "❌ vendor/omni/config/common.mk 不存在！"
+          find vendor/ -maxdepth 4 -name "*.mk" 2>/dev/null | head -30 || echo "(vendor/ 为空)"
           exit 1
         fi
+        echo "✅ 文件存在: $(pwd)/vendor/omni/config/common.mk"
+        echo "📋 文件前20行:"
+        head -20 vendor/omni/config/common.mk
 
-        echo "✅ TWRP 核心 mk: $TWRP_CORE_MK"
-        echo "📋 内容预览（前30行）:"
-        head -30 "$TWRP_CORE_MK"
-
-        # 检查 common.mk 是否有条件守卫阻止 recovery 初始化
-        if grep -qE "ifeq|ifneq|ifdef|ifndef" "$TWRP_CORE_MK"; then
-          echo "⚠️ common.mk 包含条件语句，检查是否有阻止 recovery 的逻辑..."
-          grep -n -B2 -A2 -E "BUILDING_RECOVERY|recoveryimage|RECOVERY_VARIANT" "$TWRP_CORE_MK" || true
-        fi
-
-        # 🔥 不再使用占位符！直接在源码树中生成最终设备树
+        # 🔥 第二步：生成设备树（完全硬编码路径，零变量）
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p "$DEVICE_PATH/recovery/root/etc"
 
@@ -109,23 +92,23 @@ jobs:
         cat > "$DEVICE_PATH/AndroidProducts.mk" << 'EOF'
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
-
-        # 🔥 直接写入真实路径，避免任何 sed/占位符问题
-        cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << EOF
-        \$(call inherit-product, $TWRP_CORE_MK)
-
+        
+                # 🔥 关键：不使用任何 shell 变量，直接写死相对路径
+                cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << 'EOF'
+        $(call inherit-product, vendor/omni/config/common.mk)
+        
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
         PRODUCT_BRAND := Teclast
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
-
-        PRODUCT_COPY_FILES += \\
-            \$(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
+        
+        PRODUCT_COPY_FILES += \
+            $(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
-
-        cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
+        
+                cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
         TARGET_NO_KERNEL := true
@@ -176,8 +159,8 @@ jobs:
         TW_USE_MINIMAL_BUSYBOX := true
         TW_USE_TOOLBOX := true
         EOF
-
-        cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
+        
+                cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
         /boot emmc /dev/block/by-name/boot flags=backup=1
         /recovery emmc /dev/block/by-name/recovery flags=backup=1
         /system ext4 /dev/block/by-name/system flags=backup=8
@@ -188,8 +171,17 @@ jobs:
         /usb-otg auto /dev/block/sda1 flags=display="USB-OTG";storage;wipeingui;removable
         EOF
 
-        echo "📋 最终产品 mk:"
+        # 🔥 第三步：验证写入的文件内容是否正确
+        echo "📋 验证写入的产品 mk:"
         cat "$DEVICE_PATH/twrp_m20_mt6797.mk"
+        echo "---"
+        # 确认第一行确实是 inherit-product 且路径正确
+        FIRST_LINE=$(head -1 "$DEVICE_PATH/twrp_m20_mt6797.mk")
+        if [[ "$FIRST_LINE" != *"vendor/omni/config/common.mk"* ]]; then
+          echo "❌ 产品 mk 第一行内容异常: $FIRST_LINE"
+          exit 1
+        fi
+        echo "✅ 产品 mk 内容验证通过"
 
         source build/envsetup.sh
 
@@ -201,17 +193,17 @@ jobs:
           echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1
         fi
 
-        # 🔥 终极诊断：dump 整个 make 变量数据库中与 recovery 相关的所有内容
+        # 🔥 第四步：如果仍失败，检查 common.mk 内部是否有条件跳过
         if ! make -n recoveryimage >/dev/null 2>&1; then
           echo "❌ recoveryimage 仍未注册！"
-          echo "=== BUILDING_RECOVERY_IMAGE ==="
-          make -qp 2>/dev/null | grep -i "BUILDING_RECOVERY" || echo "(未定义)"
-          echo "=== RECOVERY_VARIANT ==="
-          make -qp 2>/dev/null | grep -i "RECOVERY_VARIANT" || echo "(未定义)"
-          echo "=== 所有含 recovery 的变量 ==="
-          make -qp 2>/dev/null | grep -iE "^[A-Z_]*RECOVERY[A-Z_]*\s*[:?+]?=" | head -30 || echo "(无)"
-          echo "=== common.mk 是否被 include ==="
-          grep -r "common.mk" /tmp/lunch_output.txt || echo "(lunch 输出中未提及)"
+          echo "=== 检查 common.mk 内部条件守卫 ==="
+          grep -n -E "ifeq|ifneq|ifdef|ifndef|BUILDING_RECOVERY|RECOVERY_VARIANT|include.*recovery" vendor/omni/config/common.mk || echo "(无条件语句)"
+          echo "=== 搜索整个 vendor/omni 中设置 BUILDING_RECOVERY_IMAGE 的位置 ==="
+          grep -rn "BUILDING_RECOVERY_IMAGE" vendor/omni/ 2>/dev/null || echo "(未在 vendor/omni 中找到)"
+          echo "=== 搜索整个 build/core 中检查 BUILDING_RECOVERY_IMAGE 的位置 ==="
+          grep -rn "BUILDING_RECOVERY_IMAGE" build/core/ 2>/dev/null | head -10 || echo "(未在 build/core 中找到)"
+          echo "=== lunch 完整输出最后50行 ==="
+          tail -50 /tmp/lunch_output.txt
           exit 1
         fi
 
