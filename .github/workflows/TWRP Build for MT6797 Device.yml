@@ -105,23 +105,26 @@ jobs:
           cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
           DEVICE_PATH := device/teclast/m20_mt6797
           TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
-          # ✅ 启用 LZMA 压缩（核心手段，预计节省 2-4MB）
+          # ✅ LZMA 压缩（覆盖所有可能的变量名）
           LZMA_RAMDISK_TARGETS := recovery
+          BOARD_USE_LZMA_COMPRESSION := true
+          TARGET_RECOVERY_RAMDISK_COMPRESSION := lzma
           
-          # ✅ 移除所有调试符号与预编译优化
+          # ✅ 强制 strip 所有二进制
           TARGET_STRIP_MODULE_USE := true
           WITH_DEXPREOPT := false
+          DONT_DEXPREOPT_PREBUILTS := true
           
-          # ✅ 禁用 Recovery 中的 adb（节省 ~800KB，不影响ZIP安装）
+          # ✅ TWRP 裁剪（使用 8.1 确认有效的变量）
           TW_EXCLUDE_ADB := true
-          
-          # ✅ 使用最小化 busybox（节省 ~500KB）
-          TW_USE_MINIMAL_BUSYBOX := true
-          
-          # ✅ 禁用 TWRP App 提示与内置安装器（节省 ~600KB）
           TW_EXCLUDE_TWRPAPP := true
+          TW_USE_MINIMAL_BUSYBOX := true
+          TW_NO_SCREEN_TIMEOUT := true
+          TW_NO_BATT_PERCENT := true
+          TW_EXCLUDE_ENCRYPTED_BACKUPS := true
+          TW_EXCLUDE_NANO := true
           
-          # ✅ 修正块大小为 MTK 标准值
+          # ✅ 块大小
           BOARD_FLASH_BLOCK_SIZE := 131072
           
           # === 64位配置 ===
