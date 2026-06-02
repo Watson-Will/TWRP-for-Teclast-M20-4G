@@ -69,28 +69,26 @@ jobs:
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
         find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 确认构建系统是 Kati+Ninja
-        echo "=== 构建系统检测 ==="
-        which make
-        make --version 2>&1 | head -3 || true
-        [ -f "build/kati/ckati" ] && echo "✅ Kati detected" || echo "⚠️ No kati binary"
-        ls build/make/tools/kati* 2>/dev/null || true
+        # 🔥 检测实际构建系统版本
+        echo "=== 构建系统版本检测 ==="
+        grep -r "PLATFORM_VERSION :=" build/make/core/version_defaults.mk 2>/dev/null || true
+        [ -f "build/soong/Android.bp" ] && echo "✅ Soong detected" || echo "⚠️ No Soong"
+        [ -f "bootable/recovery/Android.bp" ] && echo "✅ recovery Android.bp exists" || echo "⚠️ Only Android.mk for recovery"
+        ls bootable/recovery/Android.* 2>/dev/null
 
-        # 🔥 Patch config.mk（Kati 会解析这个文件）
-        CORE_CONFIG="build/make/core/config.mk"
-        [ ! -f "$CORE_CONFIG" ] && CORE_CONFIG="build/core/config.mk"
-        if ! grep -q "^# TWRP_FORCE_RECOVERY" "$CORE_CONFIG"; then
-          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\nPRODUCT_BUILD_RECOVERY := true\n' "$CORE_CONFIG"
-          echo "✅ Patched $CORE_CONFIG"
-        fi
+        # 🔥 检查 TWRP 是否有自己的构建脚本
+        echo "=== TWRP 构建入口检测 ==="
+        [ -f "vendor/omni/build/build_recovery.sh" ] && echo "✅ build_recovery.sh found" || true
+        find vendor/omni -name "*.sh" -type f 2>/dev/null | head -10
+        grep -rn "recoveryimage\|BUILDING_RECOVERY" vendor/omni/build/ 2>/dev/null | head -20
 
-        # 🔥 同时在 product_config.mk 中注入（这是产品变量最终确定的地方）
-        PROD_CONFIG="build/make/core/product_config.mk"
-        [ ! -f "$PROD_CONFIG" ] && PROD_CONFIG="build/core/product_config.mk"
-        if [ -f "$PROD_CONFIG" ] && ! grep -q "^# TWRP_FORCE_RECOVERY" "$PROD_CONFIG"; then
-          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\n' "$PROD_CONFIG"
-          echo "✅ Also patched $PROD_CONFIG"
-        fi
+        # 🔥 在所有可能的配置文件中强制注入
+        for f in build/make/core/config.mk build/make/core/product_config.mk build/core/config.mk; do
+          if [ -f "$f" ] && ! grep -q "^# TWRP_FORCE_RECOVERY" "$f"; then
+            sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\nPRODUCT_BUILD_RECOVERY := true\n' "$f"
+            echo "✅ Patched $f"
+          fi
+        done
 
         # 生成设备树
         DEVICE_PATH="device/teclast/m20_mt6797"
@@ -178,44 +176,55 @@ jobs:
         EOF
 
         source build/envsetup.sh
-
-        # 🔥 通过环境变量强制传递（Kati 会继承）
         export BUILDING_RECOVERY_IMAGE=true
         export RECOVERY_VARIANT=twrp
         export PRODUCT_BUILD_RECOVERY=true
 
         lunch twrp_m20_mt6797-eng > >(tee /tmp/lunch_output.txt) 2>&1
         sleep 1
-
         [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ] && { echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1; }
 
-        # 🔥 不再使用 make -n / make -qp（Kati 不支持）
-        # 直接尝试构建，捕获输出判断
-        echo "=== 直接尝试 make recoveryimage ==="
-        set +e
-        MAKE_OUTPUT=$(make -j$(nproc) recoveryimage SHOW_COMMANDS=1 2>&1)
-        MAKE_EXIT=$?
-        set -e
-        echo "$MAKE_OUTPUT" | tail -50
+        # 🔥 尝试所有可能的 TWRP 构建目标
+        echo "=== 尝试构建目标列表 ==="
+        TARGETS="recoveryimage bootimage ramdisk"
+        BUILT=false
 
-        # 检查是否生成了 recovery.img
-        RECOVERY_IMG="$OUT/recovery.img"
-        if [ -f "$RECOVERY_IMG" ]; then
-          SIZE=$(stat -c%s "$RECOVERY_IMG")
-          echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
-          [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB"; exit 1; }
-          echo "✅ 构建成功！"
-        else
-          echo "❌ recovery.img 未生成"
-          echo "=== 搜索 out 目录中的 recovery 相关文件 ==="
-          find "$OUT" -name "*recovery*" -type f 2>/dev/null | head -20 || echo "(无)"
-          echo "=== build.ninja 中是否包含 recovery ==="
-          [ -f "$OUT/build.ninja" ] && grep -c "recovery" "$OUT/build.ninja" || echo "(无 build.ninja)"
-          echo "=== make 退出码: $MAKE_EXIT ==="
-          echo "=== lunch 输出 ==="
-          cat /tmp/lunch_output.txt | tail -30
+        for TARGET in $TARGETS; do
+          echo "--- 尝试: make $TARGET ---"
+          set +e
+          OUTPUT=$(make -j$(nproc) $TARGET SHOW_COMMANDS=1 2>&1)
+          EXIT_CODE=$?
+          set -e
+          echo "$OUTPUT" | tail -20
+
+          if [ -f "$OUT/recovery.img" ]; then
+            echo "✅ $TARGET 生成了 recovery.img!"
+            BUILT=true
+            break
+          fi
+
+          # 如果生成了 boot.img 但没有 recovery.img，可能需要重命名
+          if [ "$TARGET" = "bootimage" ] && [ -f "$OUT/boot.img" ] && [ ! -f "$OUT/recovery.img" ]; then
+            echo "⚠️ bootimage 生成了 boot.img，检查是否可作为 recovery 使用"
+          fi
+        done
+
+        if [ "$BUILT" = false ]; then
+          echo "❌ 所有目标均未生成 recovery.img"
+          echo "=== out/ 目录完整内容 ==="
+          find "$OUT" -maxdepth 3 -type f 2>/dev/null | sort | head -50
+          echo "=== ninja 文件搜索 ==="
+          find "$OUT" -name "*.ninja" -type f 2>/dev/null | head -10
+          echo "=== 检查是否有 build.ninja 在其他位置 ==="
+          find . -name "build.ninja" -not -path "./out/*" -type f 2>/dev/null | head -5
           exit 1
         fi
+
+        RECOVERY_IMG="$OUT/recovery.img"
+        SIZE=$(stat -c%s "$RECOVERY_IMG")
+        echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
+        [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB"; exit 1; }
+        echo "✅ 构建成功！"
 
     - name: Upload TWRP Recovery Image
       uses: actions/upload-artifact@v4
