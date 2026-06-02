@@ -57,13 +57,18 @@ jobs:
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
 
-        # 🔥 注意：这里不再硬编码 inherit-product，改为在 Sync 步骤中动态生成
-        # 先创建一个占位符产品 mk
+        # 🔥 核心修复：添加 PRODUCT_BUILD_RECOVERY 强制启用 recovery 目标
         cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
         # TWRP_CORE_INHERIT 将在构建步骤中被替换为实际路径
         $(call inherit-product, TWRP_CORE_INHERIT_PLACEHOLDER)
         $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
         $(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
+        
+        # 🔥 关键：显式声明这是一个 recovery-only 产品
+        PRODUCT_BUILD_RECOVERY := true
+        PRODUCT_BUILD_SYSTEM_IMAGE := false
+        PRODUCT_BUILD_VENDOR_IMAGE := false
+        PRODUCT_BUILD_CACHE_IMAGE := false
         
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
@@ -72,7 +77,7 @@ jobs:
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
         EOF
-
+        
         cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
@@ -171,30 +176,37 @@ jobs:
         mkdir -p device/teclast
         cp -r ../device/teclast/m20_mt6797 ./device/teclast/
         
-        # 🔥 核心修复：动态探测 TWRP 核心 mk 的实际路径
+        # 🔥 增强探测：不仅检查文件存在，还验证内容是否包含 recovery 相关定义
         TWRP_CORE_MK=""
         for candidate in \
           "vendor/omni/config/common.mk" \
           "vendor/twrp/config/common.mk" \
           "bootable/recovery/twrp.mk" \
-          "build/target/product/twrp.mk"; do
+          "build/target/product/twrp.mk" \
+          "vendor/omni/config/twrp.mk"; do
           if [ -f "$candidate" ]; then
-            TWRP_CORE_MK="$candidate"
-            break
+            # 验证文件内容是否真的与 TWRP/recovery 相关
+            if grep -qiE "(recovery|twrp|RECOVERYIMAGE)" "$candidate" 2>/dev/null; then
+              TWRP_CORE_MK="$candidate"
+              echo "✅ 找到有效的 TWRP 核心配置: $candidate"
+              echo "📋 文件前10行内容:"
+              head -10 "$candidate"
+              break
+            else
+              echo "⚠️ 文件存在但不含 recovery 定义，跳过: $candidate"
+            fi
           fi
         done
         
         if [ -z "$TWRP_CORE_MK" ]; then
-          echo "❌ 无法找到 TWRP 核心配置文件！已搜索的路径均不存在。"
+          echo "❌ 无法找到有效的 TWRP 核心配置文件！"
+          echo "🔍 全局搜索包含 'recoveryimage' 的 mk 文件..."
+          find . -name "*.mk" -not -path "./out/*" -exec grep -l "recoveryimage" {} \; 2>/dev/null | head -20 || true
           echo "📋 vendor/ 目录结构:"
-          ls -la vendor/ || true
-          echo "📋 bootable/recovery/ 目录结构:"
-          ls -la bootable/recovery/ | head -20 || true
+          find vendor/ -maxdepth 3 -type f -name "*.mk" 2>/dev/null | head -30 || true
           exit 1
         fi
-        echo "✅ 找到 TWRP 核心配置: $TWRP_CORE_MK"
         
-        # 将占位符替换为实际路径
         sed -i "s|TWRP_CORE_INHERIT_PLACEHOLDER|$TWRP_CORE_MK|g" device/teclast/m20_mt6797/twrp_m20_mt6797.mk
         echo "📋 最终产品 mk 内容:"
         cat device/teclast/m20_mt6797/twrp_m20_mt6797.mk
@@ -206,17 +218,19 @@ jobs:
         sleep 1
         
         if [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ]; then
-          echo "❌ lunch 失败！TARGET_PRODUCT=$TARGET_PRODUCT, OUT=$OUT"
+          echo "❌ lunch 失败！"
           cat /tmp/lunch_output.txt
           exit 1
         fi
         echo "✅ lunch 成功！"
         
-        # 预检 recoveryimage 目标
+        # 🔥 增强诊断：如果目标仍不存在，列出所有已注册的 make target
         if ! make -n recoveryimage >/dev/null 2>&1; then
           echo "❌ recoveryimage 目标仍未注册！"
-          echo "📋 lunch 输出中的关键信息:"
-          grep -iE "(error|warning|recovery|twrp)" /tmp/lunch_output.txt || true
+          echo "🔍 搜索所有包含 'recovery' 的已注册目标..."
+          make -qp 2>/dev/null | grep -E "^[a-zA-Z_-]*recovery[a-zA-Z_-]*:" | sort -u || true
+          echo "🔍 检查 PRODUCT_BUILD_RECOVERY 是否生效..."
+          make -qp 2>/dev/null | grep "PRODUCT_BUILD_RECOVERY" || echo "(未找到该变量)"
           exit 1
         fi
         echo "✅ recoveryimage 目标已确认存在"
@@ -232,13 +246,12 @@ jobs:
           MAX_SIZE=16777216
           echo "📊 recovery.img 大小: $SIZE 字节 ($((SIZE/1024/1024)) MB)"
           if [ $SIZE -gt $MAX_SIZE ]; then
-            echo "❌ 错误：镜像超过 16MB 限制！当前超出 $(( (SIZE - MAX_SIZE) / 1024 )) KB"
+            echo "❌ 镜像超过 16MB 限制！超出 $(( (SIZE - MAX_SIZE) / 1024 )) KB"
             exit 1
-          else
-            echo "✅ 构建成功！镜像大小合规。"
           fi
+          echo "✅ 构建成功！镜像大小合规。"
         else
-          echo "❌ 错误：recovery.img 未在 $OUT 中生成！"
+          echo "❌ recovery.img 未生成！"
           ls -laR "$OUT/" | head -100 || true
           exit 1
         fi
