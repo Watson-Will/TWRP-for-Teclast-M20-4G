@@ -69,64 +69,27 @@ jobs:
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
         find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 第一步：精确定位 recoveryimage 目标的注册逻辑
-        CORE_MAKEFILE="build/make/core/Makefile"
-        [ ! -f "$CORE_MAKEFILE" ] && CORE_MAKEFILE="build/core/Makefile"
+        # 🔥 确认构建系统是 Kati+Ninja
+        echo "=== 构建系统检测 ==="
+        which make
+        make --version 2>&1 | head -3 || true
+        [ -f "build/kati/ckati" ] && echo "✅ Kati detected" || echo "⚠️ No kati binary"
+        ls build/make/tools/kati* 2>/dev/null || true
 
-        echo "=== 搜索 Makefile 中所有 recoveryimage 相关行 ==="
-        grep -n "recoveryimage" "$CORE_MAKEFILE" || echo "(未在 Makefile 中找到)"
-
-        echo "=== 搜索 Makefile 中 BUILDING_RECOVERY_IMAGE 相关行 ==="
-        grep -n "BUILDING_RECOVERY_IMAGE" "$CORE_MAKEFILE" || echo "(未在 Makefile 中找到)"
-
-        echo "=== 搜索 Makefile 中 PRODUCT_BUILD_RECOVERY 相关行 ==="
-        grep -n "PRODUCT_BUILD_RECOVERY" "$CORE_MAKEFILE" || echo "(未在 Makefile 中找到)"
-
-        # 🔥 第二步：找到 recoveryimage phony target 的实际定义位置
-        # 它可能在 Makefile 中通过 ifeq 条件动态生成
-        echo "=== recoveryimage 定义上下文 (前后80行) ==="
-        REC_DEF_LINE=$(grep -n "^recoveryimage:" "$CORE_MAKEFILE" 2>/dev/null | head -1 | cut -d: -f1 || true)
-        if [ -z "$REC_DEF_LINE" ]; then
-          # 可能是通过 eval 或变量间接定义的，搜索更宽泛的模式
-          REC_DEF_LINE=$(grep -n "recoveryimage" "$CORE_MAKEFILE" 2>/dev/null | grep -v "nodeps\|#\|dont_bother" | head -1 | cut -d: -f1 || true)
-        fi
-
-        if [ -n "$REC_DEF_LINE" ]; then
-          START=$((REC_DEF_LINE > 80 ? REC_DEF_LINE - 80 : 1))
-          END=$((REC_DEF_LINE + 30))
-          sed -n "${START},${END}p" "$CORE_MAKEFILE"
-        else
-          echo "(未在 Makefile 中找到 recoveryimage 定义)"
-          echo "=== 搜索整个 build/make/ 目录 ==="
-          grep -rn "^recoveryimage:" build/make/ 2>/dev/null | head -5
-          grep -rn "recoveryimage" build/make/core/tasks/ 2>/dev/null | head -10
-        fi
-
-        # 🔥 第三步：暴力 patch —— 直接在 Makefile 末尾追加 recoveryimage 目标
-        # 这是最后手段：如果构建系统不自动注册，我们就手动注册
-        echo "🔧 强制追加 recoveryimage 目标到 $CORE_MAKEFILE"
-        cat >> "$CORE_MAKEFILE" << 'MAKEPATCH'
-
-        # === TWRP FORCE RECOVERY TARGET ===
-        BUILDING_RECOVERY_IMAGE := true
-        RECOVERY_VARIANT := twrp
-        .PHONY: recoveryimage
-        recoveryimage: $(PRODUCT_OUT)/recovery.img
-        	@echo "TWRP: recoveryimage target invoked"
-        
-        ifneq ($(wildcard bootable/recovery/Android.mk),)
-        include bootable/recovery/Android.mk
-        endif
-        # === END TWRP FORCE ===
-        MAKEPATCH
-        echo "✅ Patch appended"
-        tail -15 "$CORE_MAKEFILE"
-
-        # 同时确保 config.mk 也有变量（双重保险）
+        # 🔥 Patch config.mk（Kati 会解析这个文件）
         CORE_CONFIG="build/make/core/config.mk"
         [ ! -f "$CORE_CONFIG" ] && CORE_CONFIG="build/core/config.mk"
         if ! grep -q "^# TWRP_FORCE_RECOVERY" "$CORE_CONFIG"; then
-          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\n' "$CORE_CONFIG"
+          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\nPRODUCT_BUILD_RECOVERY := true\n' "$CORE_CONFIG"
+          echo "✅ Patched $CORE_CONFIG"
+        fi
+
+        # 🔥 同时在 product_config.mk 中注入（这是产品变量最终确定的地方）
+        PROD_CONFIG="build/make/core/product_config.mk"
+        [ ! -f "$PROD_CONFIG" ] && PROD_CONFIG="build/core/product_config.mk"
+        if [ -f "$PROD_CONFIG" ] && ! grep -q "^# TWRP_FORCE_RECOVERY" "$PROD_CONFIG"; then
+          sed -i '1i\# TWRP_FORCE_RECOVERY\nBUILDING_RECOVERY_IMAGE := true\nRECOVERY_VARIANT := twrp\n' "$PROD_CONFIG"
+          echo "✅ Also patched $PROD_CONFIG"
         fi
 
         # 生成设备树
@@ -215,36 +178,44 @@ jobs:
         EOF
 
         source build/envsetup.sh
+
+        # 🔥 通过环境变量强制传递（Kati 会继承）
+        export BUILDING_RECOVERY_IMAGE=true
+        export RECOVERY_VARIANT=twrp
+        export PRODUCT_BUILD_RECOVERY=true
+
         lunch twrp_m20_mt6797-eng > >(tee /tmp/lunch_output.txt) 2>&1
         sleep 1
 
         [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ] && { echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1; }
 
-        echo "=== 验证 BUILDING_RECOVERY_IMAGE ==="
-        make -qp 2>/dev/null | grep "BUILDING_RECOVERY_IMAGE" || echo "(仍未设置!)"
+        # 🔥 不再使用 make -n / make -qp（Kati 不支持）
+        # 直接尝试构建，捕获输出判断
+        echo "=== 直接尝试 make recoveryimage ==="
+        set +e
+        MAKE_OUTPUT=$(make -j$(nproc) recoveryimage SHOW_COMMANDS=1 2>&1)
+        MAKE_EXIT=$?
+        set -e
+        echo "$MAKE_OUTPUT" | tail -50
 
-        echo "=== 验证 recoveryimage 目标 ==="
-        make -n recoveryimage 2>&1 | head -20
-
-        if ! make -n recoveryimage >/dev/null 2>&1; then
-          echo "❌ recoveryimage 仍未注册！"
-          echo "=== Makefile 末尾 patch 内容 ==="
-          tail -20 "$CORE_MAKEFILE"
-          echo "=== make -qp 中所有含 image 的目标 ==="
-          make -qp 2>/dev/null | grep -E "^[a-z]+image:" | sort -u | head -20
+        # 检查是否生成了 recovery.img
+        RECOVERY_IMG="$OUT/recovery.img"
+        if [ -f "$RECOVERY_IMG" ]; then
+          SIZE=$(stat -c%s "$RECOVERY_IMG")
+          echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
+          [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB"; exit 1; }
+          echo "✅ 构建成功！"
+        else
+          echo "❌ recovery.img 未生成"
+          echo "=== 搜索 out 目录中的 recovery 相关文件 ==="
+          find "$OUT" -name "*recovery*" -type f 2>/dev/null | head -20 || echo "(无)"
+          echo "=== build.ninja 中是否包含 recovery ==="
+          [ -f "$OUT/build.ninja" ] && grep -c "recovery" "$OUT/build.ninja" || echo "(无 build.ninja)"
+          echo "=== make 退出码: $MAKE_EXIT ==="
+          echo "=== lunch 输出 ==="
+          cat /tmp/lunch_output.txt | tail -30
           exit 1
         fi
-
-        echo "✅ recoveryimage 已注册"
-        export LZMA_RAMDISK_TARGETS=recovery BOARD_USE_LZMA_COMPRESSION=true
-        make -j$(nproc) recoveryimage SHOW_COMMANDS=1
-
-        RECOVERY_IMG="$OUT/recovery.img"
-        [ ! -f "$RECOVERY_IMG" ] && { echo "❌ recovery.img 未生成"; ls -laR "$OUT/" | head -100; exit 1; }
-        SIZE=$(stat -c%s "$RECOVERY_IMG")
-        echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
-        [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB"; exit 1; }
-        echo "✅ 构建成功！"
 
     - name: Upload TWRP Recovery Image
       uses: actions/upload-artifact@v4
