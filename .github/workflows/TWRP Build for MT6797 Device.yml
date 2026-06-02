@@ -24,16 +24,14 @@ jobs:
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y git wget curl unzip python2 python3 python3-pip bc lz4 xz-utils brotli cpio gperf libxml2-utils zip
-        
         mkdir -p ~/bin
         curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
         chmod a+x ~/bin/repo
         echo "$HOME/bin" >> $GITHUB_PATH
-        
         git config --global user.name "TWRP Builder"
         git config --global user.email "builder@twrp.me"
         sudo ln -sf /usr/bin/python2 /usr/bin/python
-        
+
     - name: Install Legacy ncurses & tinfo Libraries
       run: |
         if ! sudo apt-get install -y libncurses5 libtinfo5; then
@@ -43,42 +41,91 @@ jobs:
           rm -f *.deb
         fi
 
-    - name: Generate Device Tree for MT6797
+    - name: Setup JDK 8
       run: |
-        DEVICE_PATH="device/teclast/m20_mt6797"
-        mkdir -p $DEVICE_PATH/recovery/root/etc
-        
-        if [ ! -f "boot.img" ]; then
-          echo "❌ 错误：请在仓库根目录放入小写的 boot.img！"; exit 1
-        fi
-        cp boot.img $DEVICE_PATH/prebuilt_boot.img
+        sudo apt-get install -y openjdk-8-jdk
+        sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
+        sudo update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac
+        echo "JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64" >> $GITHUB_ENV
 
-        cat > $DEVICE_PATH/AndroidProducts.mk << 'EOF'
+    - name: Prepare LZMA Tools and Swap
+      run: |
+        sudo apt-get install -y xz-utils lzma
+        sudo fallocate -l 4G /swapfile
+        sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+        free -h
+
+    - name: Sync Source & Generate Device Tree & Build
+      run: |
+        set -e
+
+        mkdir -p twrp_build && cd twrp_build
+
+        repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-8.1 --depth=1
+        repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+
+        echo "🧹 安全清理..."
+        rm -rf frameworks/ml external/chromium-webview external/ant-wireless
+        rm -rf device/qcom/* device/generic/goldfish vendor/qcom/opensource/dataservices
+        rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
+        find . -path ./out -prune -o -type f -name "*.apk" -print | xargs -r rm -f
+        find . -path ./out -prune -o -type f -name "*.odex" -print | xargs -r rm -f
+
+        # 🔥 关键诊断：确认 TWRP 核心 mk 存在且内容正确
+        TWRP_CORE_MK=""
+        for f in vendor/omni/config/common.mk vendor/twrp/config/common.mk; do
+          if [ -f "$f" ]; then
+            TWRP_CORE_MK="$f"
+            break
+          fi
+        done
+
+        if [ -z "$TWRP_CORE_MK" ]; then
+          echo "❌ TWRP 核心 mk 不存在！"
+          echo "📋 vendor/ 目录:"
+          find vendor/ -maxdepth 4 -type f -name "*.mk" 2>/dev/null || echo "(空)"
+          exit 1
+        fi
+
+        echo "✅ TWRP 核心 mk: $TWRP_CORE_MK"
+        echo "📋 内容预览（前30行）:"
+        head -30 "$TWRP_CORE_MK"
+
+        # 检查 common.mk 是否有条件守卫阻止 recovery 初始化
+        if grep -qE "ifeq|ifneq|ifdef|ifndef" "$TWRP_CORE_MK"; then
+          echo "⚠️ common.mk 包含条件语句，检查是否有阻止 recovery 的逻辑..."
+          grep -n -B2 -A2 -E "BUILDING_RECOVERY|recoveryimage|RECOVERY_VARIANT" "$TWRP_CORE_MK" || true
+        fi
+
+        # 🔥 不再使用占位符！直接在源码树中生成最终设备树
+        DEVICE_PATH="device/teclast/m20_mt6797"
+        mkdir -p "$DEVICE_PATH/recovery/root/etc"
+
+        if [ ! -f "../boot.img" ]; then
+          echo "❌ 请在仓库根目录放入 boot.img"; exit 1
+        fi
+        cp ../boot.img "$DEVICE_PATH/prebuilt_boot.img"
+
+        cat > "$DEVICE_PATH/AndroidProducts.mk" << 'EOF'
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
 
-        # 🔥 Android 8.1 TWRP 正确配置：不再使用 PRODUCT_BUILD_RECOVERY
-        cat > $DEVICE_PATH/twrp_m20_mt6797.mk << 'EOF'
-        # 占位符，将在构建步骤中替换为实际的 TWRP 核心 mk 路径
-        $(call inherit-product, TWRP_CORE_INHERIT_PLACEHOLDER)
-        
+        # 🔥 直接写入真实路径，避免任何 sed/占位符问题
+        cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << EOF
+        \$(call inherit-product, $TWRP_CORE_MK)
+
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
         PRODUCT_BRAND := Teclast
         PRODUCT_MODEL := Teclast M20 4G
         PRODUCT_MANUFACTURER := Teclast
         ALLOW_MISSING_DEPENDENCIES := true
-        
-        # Android 8.1 TWRP 必需属性
-        PRODUCT_COPY_FILES += \
-            $(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
+
+        PRODUCT_COPY_FILES += \\
+            \$(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
 
-        # BoardConfig.mk 保持不变（已包含所有必要的 TW_* 和 BOARD_* 变量）
-        # recovery.fstab 保持不变
-        echo "✅ 设备树模板生成完成！"
-        
-        cat > $DEVICE_PATH/BoardConfig.mk << 'EOF'
+        cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
         TARGET_NO_KERNEL := true
@@ -130,7 +177,7 @@ jobs:
         TW_USE_TOOLBOX := true
         EOF
 
-        cat > $DEVICE_PATH/recovery/root/etc/recovery.fstab << 'EOF'
+        cat > "$DEVICE_PATH/recovery/root/etc/recovery.fstab" << 'EOF'
         /boot emmc /dev/block/by-name/boot flags=backup=1
         /recovery emmc /dev/block/by-name/recovery flags=backup=1
         /system ext4 /dev/block/by-name/system flags=backup=8
@@ -140,115 +187,37 @@ jobs:
         /sdcard vfat /dev/block/mmcblk1p1 flags=display="Micro SDcard";storage;wipeingui;removable
         /usb-otg auto /dev/block/sda1 flags=display="USB-OTG";storage;wipeingui;removable
         EOF
-        echo "✅ 设备树模板生成完成！"
 
-    - name: Setup JDK 8
-      run: |
-        sudo apt-get install -y openjdk-8-jdk
-        sudo update-alternatives --set java /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java
-        sudo update-alternatives --set javac /usr/lib/jvm/java-8-openjdk-amd64/bin/javac
-        echo "JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64" >> $GITHUB_ENV
+        echo "📋 最终产品 mk:"
+        cat "$DEVICE_PATH/twrp_m20_mt6797.mk"
 
-    - name: Prepare LZMA Tools and Swap
-      run: |
-        sudo apt-get install -y xz-utils lzma
-        sudo fallocate -l 4G /swapfile
-        sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
-        free -h
-
-    - name: Sync Source & Safe Cleanup & Build
-      run: |
-        set -e
-        
-        mkdir -p twrp_build && cd twrp_build
-        
-        repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git -b twrp-8.1 --depth=1
-        repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
-        
-        echo "🧹 开始安全清理..."
-        rm -rf frameworks/ml external/chromium-webview external/ant-wireless
-        rm -rf device/qcom/* device/generic/goldfish vendor/qcom/opensource/dataservices
-        rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
-        find . -path ./out -prune -o -type f -name "*.apk" -print | xargs -r rm -f
-        find . -path ./out -prune -o -type f -name "*.odex" -print | xargs -r rm -f
-        echo "✅ 安全清理完成！"
-        
-        mkdir -p device/teclast
-        cp -r ../device/teclast/m20_mt6797 ./device/teclast/
-        
-        # 🔥 针对 Android 8.1 TWRP 的精确探测
-        # 在 twrp-8.1 manifest 中，核心配置几乎总是 vendor/omni/config/common.mk
-        # 但我们同时搜索 BUILDING_RECOVERY_IMAGE 的定义位置作为双重验证
-        TWRP_CORE_MK=""
-        
-        echo "🔍 搜索 Android 8.1 TWRP 核心配置..."
-        # 优先检查标准路径
-        if [ -f "vendor/omni/config/common.mk" ]; then
-          TWRP_CORE_MK="vendor/omni/config/common.mk"
-        elif [ -f "vendor/twrp/config/common.mk" ]; then
-          TWRP_CORE_MK="vendor/twrp/config/common.mk"
-        else
-          # 回退：搜索定义了 BUILDING_RECOVERY_IMAGE 的文件
-          FOUND=$(grep -rl "BUILDING_RECOVERY_IMAGE\s*:=" --include="*.mk" . 2>/dev/null | grep -v "./out/" | head -1 || true)
-          if [ -n "$FOUND" ]; then
-            # 从定义文件向上查找最近的 common.mk 或 twrp.mk
-            DIR=$(dirname "$FOUND")
-            while [ "$DIR" != "." ]; do
-              if [ -f "$DIR/common.mk" ]; then
-                TWRP_CORE_MK="$DIR/common.mk"
-                break
-              elif [ -f "$DIR/twrp.mk" ]; then
-                TWRP_CORE_MK="$DIR/twrp.mk"
-                break
-              fi
-              DIR=$(dirname "$DIR")
-            done
-            # 如果没找到上层 mk，直接使用定义文件本身
-            [ -z "$TWRP_CORE_MK" ] && TWRP_CORE_MK="$FOUND"
-          fi
-        fi
-        
-        if [ -z "$TWRP_CORE_MK" ]; then
-          echo "❌ 无法找到 TWRP 核心配置！"
-          echo "🔍 所有包含 BUILDING_RECOVERY_IMAGE 的文件:"
-          grep -rl "BUILDING_RECOVERY_IMAGE" --include="*.mk" . 2>/dev/null | grep -v "./out/" || echo "(无)"
-          echo "🔍 vendor/ 下所有 mk 文件:"
-          find vendor/ -name "*.mk" 2>/dev/null | head -30 || echo "(vendor/ 为空或不存在)"
-          exit 1
-        fi
-        
-        echo "✅ 使用 TWRP 核心配置: $TWRP_CORE_MK"
-        echo "📋 文件内容预览:"
-        head -20 "$TWRP_CORE_MK"
-        
-        sed -i "s|TWRP_CORE_INHERIT_PLACEHOLDER|$TWRP_CORE_MK|g" device/teclast/m20_mt6797/twrp_m20_mt6797.mk
-        
         source build/envsetup.sh
-        
-        echo "🔧 执行 lunch ..."
+
+        echo "🔧 lunch ..."
         lunch twrp_m20_mt6797-eng > >(tee /tmp/lunch_output.txt) 2>&1
         sleep 1
-        
+
         if [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ]; then
-          echo "❌ lunch 失败！"
-          cat /tmp/lunch_output.txt
-          exit 1
+          echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1
         fi
-        
-        # 🔥 Android 8.1 专用验证：检查 BUILDING_RECOVERY_IMAGE 而非 PRODUCT_BUILD_RECOVERY
+
+        # 🔥 终极诊断：dump 整个 make 变量数据库中与 recovery 相关的所有内容
         if ! make -n recoveryimage >/dev/null 2>&1; then
-          echo "❌ recoveryimage 目标仍未注册！"
-          echo "🔍 BUILDING_RECOVERY_IMAGE 状态:"
-          make -qp 2>/dev/null | grep "BUILDING_RECOVERY_IMAGE" || echo "(未设置)"
-          echo "🔍 lunch 输出中的错误/警告:"
-          grep -iE "(error|warning|fail|cannot)" /tmp/lunch_output.txt | grep -v "omni.dependencies" || echo "(无)"
+          echo "❌ recoveryimage 仍未注册！"
+          echo "=== BUILDING_RECOVERY_IMAGE ==="
+          make -qp 2>/dev/null | grep -i "BUILDING_RECOVERY" || echo "(未定义)"
+          echo "=== RECOVERY_VARIANT ==="
+          make -qp 2>/dev/null | grep -i "RECOVERY_VARIANT" || echo "(未定义)"
+          echo "=== 所有含 recovery 的变量 ==="
+          make -qp 2>/dev/null | grep -iE "^[A-Z_]*RECOVERY[A-Z_]*\s*[:?+]?=" | head -30 || echo "(无)"
+          echo "=== common.mk 是否被 include ==="
+          grep -r "common.mk" /tmp/lunch_output.txt || echo "(lunch 输出中未提及)"
           exit 1
         fi
+
         echo "✅ recoveryimage 目标已确认"
-        
         export LZMA_RAMDISK_TARGETS=recovery
         export BOARD_USE_LZMA_COMPRESSION=true
-        
         make -j$(nproc) recoveryimage SHOW_COMMANDS=1
 
         RECOVERY_IMG="$OUT/recovery.img"
@@ -256,12 +225,10 @@ jobs:
           SIZE=$(stat -c%s "$RECOVERY_IMG")
           MAX_SIZE=16777216
           echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
-          [ $SIZE -gt $MAX_SIZE ] && { echo "❌ 超过 16MB 限制！"; exit 1; }
+          [ $SIZE -gt $MAX_SIZE ] && { echo "❌ 超过 16MB"; exit 1; }
           echo "✅ 构建成功！"
         else
-          echo "❌ recovery.img 未生成！"
-          ls -laR "$OUT/" | head -100
-          exit 1
+          echo "❌ recovery.img 未生成"; ls -laR "$OUT/" | head -100; exit 1
         fi
 
     - name: Upload TWRP Recovery Image
