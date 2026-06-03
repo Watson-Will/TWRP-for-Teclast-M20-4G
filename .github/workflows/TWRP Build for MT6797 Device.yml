@@ -69,25 +69,6 @@ jobs:
         rm -rf hardware/qcom/audio hardware/qcom/camera hardware/qcom/display
         find . -path ./out -prune -o -type f \( -name "*.apk" -o -name "*.odex" \) -print | xargs -r rm -f
 
-        # 🔥 关键诊断：搞清楚这个 TWRP 版本的构建机制
-        echo "=== 诊断 TWRP 构建系统 ==="
-        echo "--- bootable/recovery 构建文件 ---"
-        ls -la bootable/recovery/Android.* 2>/dev/null || echo "(无)"
-        head -30 bootable/recovery/Android.mk 2>/dev/null || echo "(无 Android.mk)"
-        head -30 bootable/recovery/Android.bp 2>/dev/null || echo "(无 Android.bp)"
-
-        echo "--- vendor/omni 中的 recovery 配置 ---"
-        grep -rn "BUILDING_RECOVERY\|RECOVERY_VARIANT\|recoveryimage\|PRODUCT_BUILD_RECOVERY" \
-          vendor/omni/config/ build/make/core/Makefile build/core/Makefile 2>/dev/null | head -30
-
-        echo "--- 检查 TWRP 是否有独立构建入口 ---"
-        find vendor/omni bootable/recovery -maxdepth 2 -name "*.sh" -o -name "GNUmakefile" -o -name "Makefile" 2>/dev/null | head -10
-        cat vendor/omni/build/README.md 2>/dev/null | head -40 || true
-
-        echo "--- 检查 soong 中 recovery 模块定义 ---"
-        grep -rn "recovery" bootable/recovery/Android.bp 2>/dev/null | head -20
-        grep -rn "\"recovery\"" build/soong/ 2>/dev/null | head -10
-
         # Patch 配置文件
         for f in build/make/core/config.mk build/core/config.mk; do
           if [ -f "$f" ] && ! grep -q "^# TWRP_FORCE_RECOVERY" "$f"; then
@@ -96,7 +77,7 @@ jobs:
           fi
         done
 
-        # 生成设备树
+        # 生成设备树（与之前相同，省略以节省空间）
         DEVICE_PATH="device/teclast/m20_mt6797"
         mkdir -p "$DEVICE_PATH/recovery/root/etc"
         [ ! -f "../boot.img" ] && { echo "❌ 缺少 boot.img"; exit 1; }
@@ -105,8 +86,8 @@ jobs:
         cat > "$DEVICE_PATH/AndroidProducts.mk" << 'EOF'
         PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_m20_mt6797.mk
         EOF
-        
-                cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << 'EOF'
+
+        cat > "$DEVICE_PATH/twrp_m20_mt6797.mk" << 'EOF'
         $(call inherit-product, vendor/omni/config/common.mk)
         PRODUCT_DEVICE := m20_mt6797
         PRODUCT_NAME := twrp_m20_mt6797
@@ -117,8 +98,8 @@ jobs:
         PRODUCT_COPY_FILES += \
             $(LOCAL_PATH)/recovery/root/etc/recovery.fstab:recovery/root/etc/recovery.fstab
         EOF
-        
-                cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
+
+        cat > "$DEVICE_PATH/BoardConfig.mk" << 'EOF'
         DEVICE_PATH := device/teclast/m20_mt6797
         TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt_boot.img
         TARGET_NO_KERNEL := true
@@ -190,89 +171,141 @@ jobs:
         sleep 1
         [ "$TARGET_PRODUCT" != "twrp_m20_mt6797" ] || [ -z "$OUT" ] && { echo "❌ lunch 失败"; cat /tmp/lunch_output.txt; exit 1; }
 
-        # 🔥 列出 ninja 中所有可用目标（只取含 recovery 的）
-        echo "=== Ninja 中所有 recovery 相关目标 ==="
-        NINJA_FILE="$OUT/build.ninja"
-        if [ -f "$NINJA_FILE" ]; then
-          grep -E "^build .*:" "$NINJA_FILE" | grep -i recovery | head -30
-          echo "--- 总 recovery 规则数 ---"
-          grep -ci recovery "$NINJA_FILE" || echo "0"
-        else
-          echo "⚠️ build.ninja 不存在于 $OUT"
-          find . -name "build.ninja" -type f 2>/dev/null | head -5
-        fi
-
-        # 🔥 尝试直接 make recovery（不带 image 后缀）
-        echo "=== 尝试 make recovery ==="
+        # 🔥 Step 1: 构建 mkbootimg host 工具
+        echo "=== Step 1: 构建 mkbootimg ==="
         set +e
-        make -j$(nproc) recovery SHOW_COMMANDS=1 2>&1 | tail -30
-        MAKE_RC=$?
+        make -j$(nproc) mkbootimg 2>&1 | tail -10
+        MKBOOTIMG_RC=$?
         set -e
 
-        # 🔥 如果以上都失败，输出完整诊断信息供分析
-        if [ ! -f "$OUT/recovery.img" ] && [ ! -d "$OUT/recovery/root/sbin" ]; then
-          echo ""
-          echo "=========================================="
-          echo "❌ RECOVERY BUILD FAILED - DIAGNOSTIC DUMP"
-          echo "=========================================="
-          echo "--- lunch 输出最后 40 行 ---"
-          tail -40 /tmp/lunch_output.txt
-          echo ""
-          echo "--- out/ 目录结构 (深度4) ---"
-          find "$OUT" -maxdepth 4 -type d 2>/dev/null | sort
-          echo ""
-          echo "--- obj 中所有 RECOVERY 相关目录 ---"
-          find "$OUT/obj" -maxdepth 3 -type d -iname "*recovery*" 2>/dev/null | sort
-          echo ""
-          echo "--- host bin 中可用的工具 ---"
-          ls out/host/linux-x86/bin/ 2>/dev/null | grep -iE "boot|recovery|cpio|mkboot" || echo "(无相关工具)"
-          echo ""
-          echo "--- bootable/recovery 目录结构 ---"
-          find bootable/recovery -maxdepth 2 -type f -name "*.mk" -o -name "*.bp" -o -name "*.py" -o -name "*.sh" 2>/dev/null | sort
-          echo "=========================================="
+        MKBOOTIMG="out/host/linux-x86/bin/mkbootimg"
+        if [ ! -x "$MKBOOTIMG" ]; then
+          echo "⚠️ make mkbootimg 未生成，尝试备选方案..."
+          # 备选1: 从系统安装
+          sudo apt-get update -qq && sudo apt-get install -y -qq abootimg android-tools-mkbootimg 2>/dev/null || true
+          MKBOOTIMG=$(which mkbootimg 2>/dev/null || true)
+
+          # 备选2: 使用 Python 纯实现
+          if [ -z "$MKBOOTIMG" ] || [ ! -x "$MKBOOTIMG" ]; then
+            echo "⚠️ 系统 mkbootimg 也不可用，使用 Python 打包..."
+            USE_PYTHON_MKBOOTIMG=true
+          fi
+        fi
+        echo "mkbootimg: ${MKBOOTIMG:-PYTHON_FALLBACK}"
+
+        # 🔥 Step 2: 构建 recovery（已验证可行）
+        echo "=== Step 2: 构建 recovery ==="
+        make -j$(nproc) recovery 2>&1 | tail -5
+
+        RECOVERY_ROOT="$OUT/recovery/root"
+        if [ ! -f "$RECOVERY_ROOT/sbin/recovery" ]; then
+          echo "❌ recovery 二进制未生成"
           exit 1
         fi
+        echo "✅ recovery 二进制已就绪"
 
-        # 如果到了这里说明有进展，继续打包逻辑...
-        RECOVERY_IMG="$OUT/recovery.img"
-        if [ ! -f "$RECOVERY_IMG" ]; then
-          MKBOOTIMG="out/host/linux-x86/bin/mkbootimg"
-          if [ ! -x "$MKBOOTIMG" ]; then
-            echo "❌ mkbootimg 不可用: $MKBOOTIMG"
-            ls -la out/host/linux-x86/bin/mk* 2>/dev/null || echo "(无 mk* 工具)"
-            exit 1
-          fi
-
-          KERNEL_TMP="$OUT/kernel_tmp"
-          mkdir -p "$KERNEL_TMP"
-          python3 -c "
+        # 🔥 Step 3: 提取 kernel
+        echo "=== Step 3: 提取 kernel ==="
+        KERNEL_TMP="$OUT/kernel_tmp"
+        mkdir -p "$KERNEL_TMP"
+        python3 << PYEOF
         import struct
-        with open('$DEVICE_PATH/prebuilt_boot.img', 'rb') as f:
+        with open("$DEVICE_PATH/prebuilt_boot.img", "rb") as f:
             magic = f.read(8)
-            assert magic == b'ANDROID!', f'Bad magic: {magic}'
-            f.seek(8); ks = struct.unpack('<I', f.read(4))[0]
-            f.seek(20); ko = struct.unpack('<I', f.read(4))[0]
+            assert magic == b"ANDROID!", f"Bad magic: {magic}"
+            f.seek(8); ks = struct.unpack("<I", f.read(4))[0]
+            f.seek(20); ko = struct.unpack("<I", f.read(4))[0]
             f.seek(ko)
-            open('$KERNEL_TMP/kernel','wb').write(f.read(ks))
-            print(f'Extracted kernel: {ks} bytes')
-        "
+            with open("$KERNEL_TMP/kernel", "wb") as kf:
+                kf.write(f.read(ks))
+            print(f"Extracted kernel: {ks} bytes @ offset {ko}")
+        PYEOF
 
-          RECOVERY_ROOT="$OUT/recovery/root"
-          RECOVERY_RAMDISK="$OUT/recovery-ramdisk.cpio.gz"
-          (cd "$RECOVERY_ROOT" && find . | cpio -o -H newc 2>/dev/null) | gzip > "$RECOVERY_RAMDISK"
+        # 🔥 Step 4: 创建 recovery ramdisk
+        echo "=== Step 4: 创建 recovery ramdisk ==="
+        RECOVERY_RAMDISK="$OUT/recovery-ramdisk.cpio.gz"
+        (cd "$RECOVERY_ROOT" && find . | cpio -o -H newc 2>/dev/null) | gzip -9 > "$RECOVERY_RAMDISK"
+        echo "✅ Ramdisk: $(stat -c%s "$RECOVERY_RAMDISK") bytes"
 
-          "$MKBOOTIMG" \
-            --kernel "$KERNEL_TMP/kernel" \
-            --ramdisk "$RECOVERY_RAMDISK" \
-            --cmdline "bootopt=64S3,32N2,64N2 buildvariant=eng" \
-            --base 0x40078000 --pagesize 2048 \
-            --kernel_offset 0x00008000 --ramdisk_offset 0x11a88000 --tags_offset 0x07808000 \
-            --output "$RECOVERY_IMG"
-        fi
+        # 🔥 Step 5: 打包 recovery.img
+        echo "=== Step 5: 打包 recovery.img ==="
+        RECOVERY_IMG="$OUT/recovery.img"
 
+        if [ "${USE_PYTHON_MKBOOTIMG:-false}" = "true" ]; then
+          echo "使用 Python mkbootimg..."
+          python3 << PYEOF
+        import struct, sys
+        
+        def align(val, alignment):
+            return (val + alignment - 1) & ~(alignment - 1)
+        
+        kernel_path = "$KERNEL_TMP/kernel"
+        ramdisk_path = "$RECOVERY_RAMDISK"
+        output_path = "$RECOVERY_IMG"
+        cmdline = "bootopt=64S3,32N2,64N2 buildvariant=eng"
+        base = 0x40078000
+        pagesize = 2048
+        kernel_offset = 0x00008000
+        ramdisk_offset = 0x11a88000
+        tags_offset = 0x07808000
+        
+        with open(kernel_path, "rb") as f:
+            kernel_data = f.read()
+        with open(ramdisk_path, "rb") as f:
+            ramdisk_data = f.read()
+        
+        cmdline_bytes = cmdline.encode("utf-8")[:512].ljust(512, b"\x00")
+        
+        # Boot image header v0
+        header = bytearray(1648)
+        header[0:8] = b"ANDROID!"
+        struct.pack_into("<I", header, 8, len(kernel_data))   # kernel_size
+        struct.pack_into("<I", header, 12, base + kernel_offset)  # kernel_addr
+        struct.pack_into("<I", header, 16, len(ramdisk_data))  # ramdisk_size
+        struct.pack_into("<I", header, 20, base + ramdisk_offset)  # ramdisk_addr
+        struct.pack_into("<I", header, 24, 0)                  # second_size
+        struct.pack_into("<I", header, 28, base + tags_offset)  # tags_addr
+        struct.pack_into("<I", header, 32, pagesize)           # page_size
+        struct.pack_into("<I", header, 36, 0)                  # dt_size
+        struct.pack_into("<I", header, 40, 0)                  # unused
+        struct.pack_into("<I", header, 44, 0)                  # header_version
+        header[48:48+512] = cmdline_bytes
+        
+        # Calculate offsets
+        page_mask = pagesize - 1
+        kernel_off = align(1648, pagesize)
+        ramdisk_off = kernel_off + align(len(kernel_data), pagesize)
+        
+        with open(output_path, "wb") as out:
+            out.write(header)
+            out.write(b"\x00" * (kernel_off - 1648))
+            out.write(kernel_data)
+            padding = align(len(kernel_data), pagesize) - len(kernel_data)
+            out.write(b"\x00" * padding)
+            out.write(ramdisk_data)
+            padding = align(len(ramdisk_data), pagesize) - len(ramdisk_data)
+            out.write(b"\x00" * padding)
+        
+        import os
+        size = os.path.getsize(output_path)
+        print(f"✅ Python mkbootimg: {output_path} ({size} bytes)")
+        PYEOF
+                else
+                  "$MKBOOTIMG" \
+                    --kernel "$KERNEL_TMP/kernel" \
+                    --ramdisk "$RECOVERY_RAMDISK" \
+                    --cmdline "bootopt=64S3,32N2,64N2 buildvariant=eng" \
+                    --base 0x40078000 --pagesize 2048 \
+                    --kernel_offset 0x00008000 --ramdisk_offset 0x11a88000 --tags_offset 0x07808000 \
+                    --output "$RECOVERY_IMG"
+                  echo "✅ mkbootimg 打包完成"
+                fi
+
+        # 🔥 验证
+        [ ! -f "$RECOVERY_IMG" ] && { echo "❌ recovery.img 未生成"; exit 1; }
         SIZE=$(stat -c%s "$RECOVERY_IMG")
         echo "📊 recovery.img: $SIZE bytes ($((SIZE/1024/1024)) MB)"
-        [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB"; exit 1; }
+        [ $SIZE -gt 16777216 ] && { echo "❌ 超过 16MB 分区限制"; exit 1; }
         echo "✅✅✅ TWRP recovery.img 构建成功！"
 
     - name: Upload TWRP Recovery Image
